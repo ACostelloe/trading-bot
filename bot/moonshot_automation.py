@@ -84,6 +84,12 @@ def _rules_overrides_from_yaml(ov: Any) -> Dict[str, Any]:
     return out
 
 
+def scanner_rules_override_from_moonshot_yaml(moonshot_root: Dict[str, Any]) -> Dict[str, Any]:
+    """Rules block under ``scanner_automation.rules`` (same keys as ``ScannerRules``)."""
+    automation = moonshot_root.get("scanner_automation") or {}
+    return _rules_overrides_from_yaml(automation.get("rules") or automation.get("scanner_rules"))
+
+
 def run_multi_source_picks(
     root: str,
     quote_asset: str,

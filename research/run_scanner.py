@@ -5,6 +5,10 @@ Run from repo root:
 
   python research/run_scanner.py
 
+Uses the same pipeline as the live moonshot daemon: ``run_multi_source_picks`` with
+``quote_asset`` and ``scanner_automation.rules`` from ``config/moonshot_portfolio.yaml``.
+Unspecified rule fields use ``ScannerRules`` defaults in ``multi_source_scanner.py``.
+
 Optional: copy config/scanner_coingecko_map.example.yaml to config/scanner_coingecko_map.yaml
 and set COINGECKO_API_KEY / COINGECKO_API_KEY_HEADER in .env for higher CoinGecko limits.
 
@@ -26,53 +30,41 @@ try:
 except ImportError:
     pass
 
-from bot.moonshot_scanner import load_coingecko_map_yaml
+import yaml
 
-from research.scoring.multi_source_scanner import (
-    MultiSourceMoonshotScanner,
-    ScannerRules,
-    SourceConfig,
-    scan_to_ccxt_symbols,
-)
+from bot.moonshot_automation import run_multi_source_picks, scanner_rules_override_from_moonshot_yaml
+
+from research.scoring.multi_source_scanner import scan_to_ccxt_symbols
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    gecko_path = os.path.join(root, "config", "scanner_coingecko_map.yaml")
-    gecko_map = load_coingecko_map_yaml(gecko_path) if os.path.isfile(gecko_path) else {}
 
-    api_key = os.environ.get("COINGECKO_API_KEY") or None
-    api_header = os.environ.get("COINGECKO_API_KEY_HEADER") or "x-cg-demo-api-key"
+    portfolio_path = os.path.join(root, "config", "moonshot_portfolio.yaml")
+    moonshot_root: dict = {}
+    if os.path.isfile(portfolio_path):
+        with open(portfolio_path, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+        moonshot_root = doc.get("moonshot") or {}
+    else:
+        print(f"[WARN] Missing {portfolio_path}; using quote_asset=USDT and empty rules overrides.")
 
-    source_cfg = SourceConfig(
-        coingecko_api_key=api_key,
-        coingecko_api_key_header=api_header,
+    quote_asset = str(moonshot_root.get("quote_asset") or "USDT").upper()
+    rules_ov = scanner_rules_override_from_moonshot_yaml(moonshot_root)
+
+    cfg_line = (
+        f"Scanner config: quote_asset={quote_asset} "
+        f"rules={rules_ov or '(defaults only)'} "
+        f"[{portfolio_path}]"
     )
+    print(cfg_line, flush=True)
+    print(flush=True)
 
-    cache_path = os.path.join(root, "research", "cache", "coingecko_search_cache.json")
-    persist_path = os.path.join(root, "research", "multi_source_scan_state.json")
-
-    rules = ScannerRules(
-        quote_asset="USDC",
-        min_24h_quote_volume=1_500_000,
-        min_market_cap_usd=15_000_000,
-        max_market_cap_usd=1_000_000_000,
-        top_n=8,
-        coingecko_id_by_base=gecko_map,
-        coingecko_cache_path=cache_path,
-        coingecko_cache_ttl_seconds=86_400,
-        btc_regime_enabled=True,
-        btc_min_24h_change_pct=-3.0,
-        book_ticker_max_spread_pct=0.35,
-        persist_path=persist_path,
-    )
-
-    scanner = MultiSourceMoonshotScanner(source_cfg, rules)
-    picks = scanner.scan()
+    picks, scan_meta = run_multi_source_picks(root, quote_asset, rules_ov)
     symbols = scan_to_ccxt_symbols(picks)
 
-    print("scan_meta:", scanner.last_scan_meta)
+    print("scan_meta:", scan_meta)
     print("CCXT symbols:", symbols)
     print()
     if not picks:
