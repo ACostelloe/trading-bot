@@ -19,6 +19,7 @@ from bot.logger import get_logger
 from bot.alerts import send_telegram
 from bot.parameter_manager import apply_approved_parameters, validate_approved_parameters
 from bot.live_execution import place_live_market_buy, place_live_market_sell
+from bot.moonshot_guard import evaluate_moonshot_entry
 
 
 def load_config(path: str) -> dict:
@@ -248,6 +249,23 @@ def main() -> None:
                         notional = qty * float(signal.price)
                         if exec_cfg.get("live_min_notional_check", True) and notional < config["risk"]["min_order_notional"]:
                             logger.info("Buy blocked for %s: notional %.2f below minimum", symbol, notional)
+                            continue
+                        current_equity = portfolio.mark_to_market(latest_prices)
+                        moonshot = evaluate_moonshot_entry(
+                            symbol=symbol,
+                            entry_notional=notional,
+                            current_equity=current_equity,
+                            open_positions_count=portfolio.open_positions_count(),
+                            config=config,
+                        )
+                        if not moonshot.allowed:
+                            logger.info(
+                                "Buy blocked for %s: moonshot_checklist_failed score=%d/%d reasons=%s",
+                                symbol,
+                                moonshot.score,
+                                moonshot.min_required,
+                                ";".join(moonshot.reasons),
+                            )
                             continue
 
                         logger.info(

@@ -66,3 +66,38 @@ execution:
   manual_signal_override: none
   # When manual_signal_override=buy, target this USDT notional.
   manual_buy_usdt: 250
+
+moonshot_checklist:
+  enabled: false
+  # Require at least this many checks=true before any new entry is allowed.
+  min_score_to_allow: 9
+  # Hard caps from your checklist.
+  max_position_usdc: 15
+  max_microcap_position_usdc: 7
+  max_presale_position_usdc: 5
+  max_open_moonshots: 8
+  max_total_drawdown_pause_pct: 25
+  # Optional symbol classifiers for stricter caps.
+  microcap_symbols: []
+  presale_symbols: []
+  # Set booleans from your research process before trading.
+  checks:
+    narrative_tailwind: false
+    social_confirmation: false
+    narrative_not_euphoric: false
+    healthy_24h_volume: false
+    acceptable_spread: false
+    enough_orderbook_depth: false
+    acceptable_slippage_quote: false
+    contract_verified: false
+    holder_distribution_ok: false
+    unlock_schedule_known: false
+    wallet_behavior_not_suspicious: false
+    written_trade_plan_ready: false
+  # Any true flag below blocks entries immediately.
+  red_flags:
+    dangerous_mutable_contract: false
+    removable_liquidity_or_rug_pattern: false
+    oversized_unlocked_team_wallets: false
+    no_clear_exit_path: false
+    fomo_only_no_plan: false

@@ -18,6 +18,7 @@ from bot.state import load_portfolio, save_portfolio
 from bot.logger import get_logger
 from bot.alerts import send_telegram
 from bot.parameter_manager import apply_approved_parameters, validate_approved_parameters
+from bot.moonshot_guard import evaluate_moonshot_entry
 
 
 def load_config(path: str) -> dict:
@@ -192,11 +193,29 @@ def main() -> None:
                         if decision.allowed:
                             try:
                                 qty = decision.qty * event_mult
-                                if qty <= 0 or (qty * float(signal.price)) < config["risk"]["min_order_notional"]:
+                                notional = qty * float(signal.price)
+                                if qty <= 0 or notional < config["risk"]["min_order_notional"]:
                                     logger.info(
                                         "Buy blocked for %s: event_size_multiplier_too_small (mult=%.3f)",
                                         symbol,
                                         event_mult,
+                                    )
+                                    continue
+                                current_equity = portfolio.mark_to_market(latest_prices)
+                                moonshot = evaluate_moonshot_entry(
+                                    symbol=symbol,
+                                    entry_notional=notional,
+                                    current_equity=current_equity,
+                                    open_positions_count=portfolio.open_positions_count(),
+                                    config=config,
+                                )
+                                if not moonshot.allowed:
+                                    logger.info(
+                                        "Buy blocked for %s: moonshot_checklist_failed score=%d/%d reasons=%s",
+                                        symbol,
+                                        moonshot.score,
+                                        moonshot.min_required,
+                                        ";".join(moonshot.reasons),
                                     )
                                     continue
                                 result = handle_paper_buy(
