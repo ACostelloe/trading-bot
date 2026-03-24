@@ -9,6 +9,7 @@ Candidates are for research only; wire into execution only behind your own gates
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -23,6 +24,7 @@ from bot.moonshot_scanner import (
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     gecko_path = os.path.join(root, "config", "scanner_coingecko_map.yaml")
     gecko_map = load_coingecko_map_yaml(gecko_path) if os.path.isfile(gecko_path) else {}

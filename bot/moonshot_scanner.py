@@ -10,6 +10,7 @@ Use as a research / candidate generator only; execution should apply separate ga
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import time
@@ -17,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+_scan_log = logging.getLogger(__name__)
 
 
 def _spread_pct(bid: float, ask: float) -> float:
@@ -554,10 +557,18 @@ class MoonshotScanner:
 
         ok, btc_reason = self._btc_regime_ok(ticker_by_symbol, symbol_map)
         self.last_scan_meta["btc_regime"] = btc_reason
+        _scan_log.info("[SCAN_BINANCE] btc_gate ok=%s detail=%s", ok, btc_reason)
         if not ok:
+            _scan_log.info("[SCAN_BINANCE] abort early_return=len0 reason=btc_regime")
             return []
 
         broad = self._broad_filter(symbol_map, tickers)
+        self.last_scan_meta["binance_broad_count"] = len(broad)
+        _scan_log.info(
+            "[SCAN_BINANCE] binance_broad_count=%d (cap=%d)",
+            len(broad),
+            self.cfg.max_symbols_after_broad_filter,
+        )
 
         results: List[Dict[str, Any]] = []
         for row in broad:
@@ -587,6 +598,18 @@ class MoonshotScanner:
         results.sort(key=lambda x: x.get("moonshot_score", 0.0), reverse=True)
 
         top = results[: self.cfg.top_n]
+        self.last_scan_meta["deep_pass_count"] = len(results)
+        self.last_scan_meta["shortlist_count"] = len(top)
+        if top:
+            self.last_scan_meta["shortlist_head"] = [
+                {"symbol": r.get("symbol"), "moonshot_score": r.get("moonshot_score")} for r in top[:5]
+            ]
+        _scan_log.info(
+            "[SCAN_BINANCE] deep_pass=%d shortlist=%d symbols=%s",
+            len(results),
+            len(top),
+            [r.get("symbol") for r in top],
+        )
         self._merge_prior_ranks(top, prior)
 
         if self.cfg.persist_path:

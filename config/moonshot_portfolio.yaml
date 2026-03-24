@@ -24,6 +24,28 @@ moonshot:
   stop_loss_pct: 18
   state_file: moonshot_state.json
 
+  # Allow moonshot runner when settings.execution.mode is paper (dry orders still follow enabled_live_orders).
+  runner:
+    allow_when_settings_execution_not_live: false
+
+  # Periodic scan → merge into this YAML → rebalance loop uses updated symbols.
+  scanner_automation:
+    enabled: true
+    interval_seconds: 1800
+    engine: multi_source
+    write_portfolio_yaml: true
+    backup_yaml: true
+    rules:
+      top_n: 8
+      min_24h_quote_volume: 800000
+      max_candidates_after_binance: 30
+      min_dex_liquidity_usd: 0
+
+  scanner_sync:
+    mode: append
+    default_target_usdc: 10
+    max_append: 8
+
   assets:
     - name: Render
       symbol: RENDER/USDT

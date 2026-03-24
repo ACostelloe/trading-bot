@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from dataclasses import dataclass
+from typing import Any
 
 import yaml
 
@@ -12,7 +12,22 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from bot.entry_gates import moonshot_rebalance_skip_reason
 from bot.exchange import build_exchange
 from bot.logger import get_logger
+from bot.moonshot_automation import (
+    estimate_equity_quote,
+    maybe_scanner_refresh,
+    moonshot_open_positions_count,
+)
+from bot.moonshot_guard import evaluate_moonshot_entry
+from bot.moonshot_plans import parse_asset_plans
 from bot.quote_context import build_quote_execution_context
+from bot.structured_log import (
+    EVENT_MOONSHOT_CHECKLIST,
+    EVENT_MOONSHOT_ORDER_INTENT,
+    EVENT_MOONSHOT_REBALANCE_EVAL,
+    EVENT_ORDER_FILLED,
+    emit_event,
+    get_structured_logger,
+)
 from bot.unified_ledger import (
     SOURCE_MOONSHOT,
     UnifiedLedger,
@@ -22,33 +37,9 @@ from bot.unified_ledger import (
 )
 
 
-@dataclass
-class AssetPlan:
-    name: str
-    symbol: str
-    target_usdc: float
-    enabled: bool
-    manual_only: bool
-
-
 def load_yaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
-
-def parse_asset_plans(cfg: dict) -> list[AssetPlan]:
-    plans: list[AssetPlan] = []
-    for row in cfg.get("assets", []):
-        plans.append(
-            AssetPlan(
-                name=str(row.get("name", row.get("symbol", "unknown"))),
-                symbol=str(row.get("symbol", "")).strip(),
-                target_usdc=float(row.get("target_usdc", 0.0) or 0.0),
-                enabled=bool(row.get("enabled", True)),
-                manual_only=bool(row.get("manual_only", False)),
-            )
-        )
-    return plans
 
 
 def extract_order_fill(order: dict | None, fallback_qty: float, fallback_px: float) -> tuple[float, float]:
@@ -150,16 +141,27 @@ def main() -> None:
     os.chdir(root)
 
     settings = load_yaml("config/settings.yaml")
-    moonshot_root = load_yaml("config/moonshot_portfolio.yaml").get("moonshot", {})
+    portfolio_path = os.path.join(root, "config", "moonshot_portfolio.yaml")
+    moonshot_root = load_yaml(portfolio_path).get("moonshot", {})
     quote_ctx = build_quote_execution_context(settings, moonshot_root)
     logger = get_logger(settings["logging"]["file"])
+    structured = get_structured_logger(settings)
 
     if settings["exchange"].get("sandbox", True):
         raise RuntimeError("Refusing moonshot runner while sandbox is enabled")
 
     exec_cfg = settings.get("execution", {})
+    runner_cfg = moonshot_root.get("runner") or {}
     if exec_cfg.get("mode") != "live":
-        raise RuntimeError("Refusing moonshot runner while execution.mode != live")
+        if not bool(runner_cfg.get("allow_when_settings_execution_not_live", False)):
+            raise RuntimeError(
+                "Refusing moonshot runner while execution.mode != live "
+                "(set moonshot.runner.allow_when_settings_execution_not_live: true in moonshot_portfolio.yaml to override)"
+            )
+        logger.warning(
+            "[MOONSHOT_RUN] execution.mode=%s (not live); runner override enabled — use enabled_live_orders: false for safety",
+            exec_cfg.get("mode"),
+        )
 
     enabled_live_orders = bool(moonshot_root.get("enabled_live_orders", False))
     poll_seconds = int(moonshot_root.get("poll_seconds", 60))
@@ -192,6 +194,13 @@ def main() -> None:
     ledger.path = ledger_path
     trend_symbols = list(settings.get("market", {}).get("symbols", []))
     moonshot_syms = [p.symbol for p in plans if p.enabled and not p.manual_only]
+    _auto_on = bool((moonshot_root.get("scanner_automation") or {}).get("enabled", False))
+    logger.info(
+        "[MOONSHOT_RUN] tradable_plans=%s scanner_automation=%s poll_seconds=%d",
+        moonshot_syms,
+        "on" if _auto_on else "off",
+        poll_seconds,
+    )
     trend_prefix = str(ledger_cfg.get("trend_client_order_prefix", "trbot"))
     strict_led = bool(
         ledger_cfg.get(
@@ -235,8 +244,24 @@ def main() -> None:
         ledger_path,
     )
 
+    scanner_loop_state: dict[str, Any] = {"last_scan_monotonic": 0.0}
+
     while True:
         try:
+            moonshot_root, plans, moonshot_syms, scan_tick = maybe_scanner_refresh(
+                root=root,
+                portfolio_path=portfolio_path,
+                moonshot_root=moonshot_root,
+                plans=plans,
+                moonshot_syms=moonshot_syms,
+                settings=settings,
+                quote_asset=quote_asset,
+                logger=logger,
+                state=scanner_loop_state,
+            )
+            if scan_tick is not None:
+                logger.info("[MOONSHOT_RUN] scanner_tick result=%s syms=%s", scan_tick, moonshot_syms)
+
             bal = exchange.fetch_balance()
             free_bal = bal.get("free", {}) or {}
             total_bal = bal.get("total", {}) or {}
@@ -258,6 +283,20 @@ def main() -> None:
                     source_assets=conversion_source_assets,
                     min_conversion_notional=min_conversion_notional,
                 )
+
+            checklist_on = bool((settings.get("moonshot_checklist") or {}).get("enabled", False))
+            equity_quote = 0.0
+            open_moon_n = 0
+            if checklist_on:
+                equity_quote = estimate_equity_quote(
+                    exchange,
+                    quote_asset=quote_asset,
+                    free_bal=free_bal,
+                    total_bal=total_bal,
+                    valuation_symbols=moonshot_syms,
+                    logger=logger,
+                )
+                open_moon_n = moonshot_open_positions_count(ledger, moonshot_syms)
 
             for plan in plans:
                 if not plan.enabled:
@@ -412,11 +451,45 @@ def main() -> None:
                         (((market.get("limits") or {}).get("cost") or {}).get("min") or 0.0)
                     )
                     effective_min_notional = max(min_order_notional, market_min_notional)
-                    if moonshot_rebalance_skip_reason(
+                    rebalance_skip = moonshot_rebalance_skip_reason(
                         needed_notional=needed_notional,
                         spendable_quote=spendable_quote,
                         effective_min_notional=effective_min_notional,
-                    ):
+                    )
+                    emit_event(
+                        EVENT_MOONSHOT_REBALANCE_EVAL,
+                        {
+                            "symbol": plan.symbol,
+                            "plan_name": plan.name,
+                            "managed_qty": managed_qty,
+                            "avg_entry": avg_entry,
+                            "exchange_total_base": exchange_total_base,
+                            "last_price": last_price,
+                            "position_value_quote": position_value,
+                            "target_usdc": plan.target_usdc,
+                            "min_target_usdc": min_target,
+                            "rebalance_tol_pct": rebalance_tol * 100.0,
+                            "needed_notional": needed_notional,
+                            "quote_free": quote_free,
+                            "stablecoin_buffer": stablecoin_buffer,
+                            "spendable_quote": spendable_quote,
+                            "buy_notional_cap": buy_notional,
+                            "effective_min_notional": effective_min_notional,
+                            "market_min_notional": market_min_notional,
+                            "skip_reason": rebalance_skip or "ok",
+                            "moonshot_checklist_enabled": checklist_on,
+                        },
+                        structured_logger=structured,
+                    )
+                    logger.info(
+                        "[MOONSHOT_RUN] rebalance_eval symbol=%s need=%.4f spendable=%.4f eff_min=%.4f skip=%s",
+                        plan.symbol,
+                        needed_notional,
+                        spendable_quote,
+                        effective_min_notional,
+                        rebalance_skip or "ok",
+                    )
+                    if rebalance_skip:
                         logger.info(
                             "BUY SKIP %s need=%.2f spendable=%.2f min=%.2f (market_min=%.2f)",
                             plan.symbol,
@@ -443,8 +516,62 @@ def main() -> None:
                         )
                         continue
 
+                    mdec = evaluate_moonshot_entry(
+                        symbol=plan.symbol,
+                        entry_notional=float(buy_notional),
+                        current_equity=float(equity_quote) if checklist_on else float(
+                            settings.get("risk", {}).get("starting_balance_usdt", 1000.0)
+                        ),
+                        open_positions_count=int(open_moon_n) if checklist_on else 0,
+                        config=settings,
+                    )
+                    if checklist_on:
+                        emit_event(
+                            EVENT_MOONSHOT_CHECKLIST,
+                            {
+                                "symbol": plan.symbol,
+                                "allowed": mdec.allowed,
+                                "checklist_score": mdec.score,
+                                "checklist_min": mdec.min_required,
+                                "reasons": mdec.reasons,
+                                "entry_notional": buy_notional,
+                                "equity_quote_est": equity_quote,
+                                "open_moonshot_positions": open_moon_n,
+                            },
+                            structured_logger=structured,
+                        )
+                    if not mdec.allowed:
+                        logger.info(
+                            "[MOONSHOT_RUN] checklist_block symbol=%s score=%d/%d reasons=%s",
+                            plan.symbol,
+                            mdec.score,
+                            mdec.min_required,
+                            mdec.reasons,
+                        )
+                        continue
+
                     if enabled_live_orders:
                         cid = make_client_order_id(plan.symbol, client_order_prefix)
+                        emit_event(
+                            EVENT_MOONSHOT_ORDER_INTENT,
+                            {
+                                "symbol": plan.symbol,
+                                "side": "buy",
+                                "qty": buy_qty,
+                                "last_price": last_price,
+                                "est_notional_quote": buy_notional,
+                                "client_order_id": cid,
+                                "order_type": "market",
+                            },
+                            structured_logger=structured,
+                        )
+                        logger.info(
+                            "[MOONSHOT_RUN] order_submit market_buy symbol=%s qty=%.8f cid=%s est_cost<=%.4f",
+                            plan.symbol,
+                            buy_qty,
+                            cid,
+                            buy_notional,
+                        )
                         order = exchange.create_market_buy_order(
                             plan.symbol, buy_qty, {"newClientOrderId": cid}
                         )
@@ -460,6 +587,32 @@ def main() -> None:
                                 avg_price,
                                 fee_q,
                                 append_lot=True,
+                            )
+                            ms_after = ledger.slice(plan.symbol, SOURCE_MOONSHOT)
+                            emit_event(
+                                EVENT_ORDER_FILLED,
+                                {
+                                    "source": SOURCE_MOONSHOT,
+                                    "symbol": plan.symbol,
+                                    "side": "buy",
+                                    "filled_qty": filled_qty,
+                                    "avg_price": avg_price,
+                                    "fee_quote_est": fee_q,
+                                    "order_id": order.get("id"),
+                                    "client_order_id": cid,
+                                    "tracked_qty_after": ms_after.tracked_qty,
+                                    "avg_entry_after": ms_after.avg_entry,
+                                },
+                                structured_logger=structured,
+                            )
+                            logger.info(
+                                "[MOONSHOT_RUN] ledger_apply_buy symbol=%s filled=%.8f avg=%.8f fee_est=%.6f tracked_after=%.8f avg_entry_after=%.8f",
+                                plan.symbol,
+                                filled_qty,
+                                avg_price,
+                                fee_q,
+                                ms_after.tracked_qty,
+                                ms_after.avg_entry,
                             )
                         logger.info(
                             "BUY %s qty=%.8f @ %.8f cost<=%.2f | order_id=%s client=%s",

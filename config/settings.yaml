@@ -83,9 +83,10 @@ execution:
   manual_buy_usdt: 250
 
 moonshot_checklist:
-  enabled: false
-  # Require at least this many checks=true before any new entry is allowed.
-  min_score_to_allow: 9
+  # When true, live/run_moonshot.py calls evaluate_moonshot_entry before each buy.
+  enabled: true
+  # Count of checks.* set to true required to allow entry. Use 0 until you flip checks from research.
+  min_score_to_allow: 0
   # Hard caps from your checklist.
   max_position_usdc: 15
   max_microcap_position_usdc: 7

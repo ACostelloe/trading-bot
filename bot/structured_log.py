@@ -16,6 +16,10 @@ EVENT_POSITION_REDUCED = "position_reduced"
 EVENT_POSITION_CLOSED = "position_closed"
 EVENT_KILL_SWITCH_TRIPPED = "kill_switch_tripped"
 EVENT_STARTUP_RECONCILIATION_DELTA = "startup_reconciliation_delta"
+EVENT_MULTI_SOURCE_SCAN = "multi_source_scan_complete"
+EVENT_MOONSHOT_REBALANCE_EVAL = "moonshot_rebalance_eval"
+EVENT_MOONSHOT_ORDER_INTENT = "moonshot_order_intent"
+EVENT_MOONSHOT_CHECKLIST = "moonshot_checklist"
 
 STRUCTURED_LOGGER_NAME = "crypto_bot_structured"
 
