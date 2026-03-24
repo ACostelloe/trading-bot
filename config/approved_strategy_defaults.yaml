@@ -1,0 +1,11 @@
+# Committed baseline for live/paper when parameter_selection.enabled is true.
+# Replace with your own walk-forward output, or set parameter_selection.source_file
+# to approved_strategy_params.yaml (repo root; gitignored) after running select_approved_parameters.
+strategy:
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  rsi_entry_min: 55
+  atr_period: 14
+  stop_atr_multiple: 1.5
+  take_profit_rr: 2.0

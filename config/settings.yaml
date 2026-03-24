@@ -65,7 +65,8 @@ walk_forward:
 
 parameter_selection:
   enabled: true
-  source_file: approved_strategy_params.yaml
+  # Tracked file so deploys (e.g. Lightsail) have a valid overlay; override locally to approved_strategy_params.yaml after walk-forward.
+  source_file: config/approved_strategy_defaults.yaml
   require_stability_threshold: false
   min_stability_score: 0.45
   min_combo_win_pct: 25.0
