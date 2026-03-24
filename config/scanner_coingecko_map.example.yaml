@@ -1,0 +1,6 @@
+# Copy to scanner_coingecko_map.yaml and fill IDs from https://api.coingecko.com/api/v3/coins/list
+# ScannerConfig.coingecko_id_by_base or load_coingecko_map_yaml("config/scanner_coingecko_map.yaml")
+
+map:
+  RENDER: render-token
+  PHA: phala-network
