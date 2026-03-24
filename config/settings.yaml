@@ -3,8 +3,9 @@ exchange:
   sandbox: false
 
 market:
+  # Trend bot: separate from moonshot. BTC is targeted in moonshot_portfolio.yaml only (avoids double BTC exposure).
   symbols:
-    - BTC/USDT
+    - ETH/USDT
   timeframe: 15m
   limit: 300
   poll_seconds: 30
@@ -19,7 +20,10 @@ strategy:
   take_profit_rr: 2.0
 
 risk:
-  starting_balance_usdt: 1000
+  # Baseline for drawdown / daily-loss math; set near Binance “Estimated Balance” (USDT terms).
+  starting_balance_usdt: 347
+  # moonshot checklist equity: binance_total = full spot book (recommended); moonshot_symbols_only = narrower
+  equity_valuation: binance_total
   account_risk_per_trade: 0.001
   account_risk_per_trade_low: 0.001
   account_risk_per_trade_medium: 0.001
@@ -87,8 +91,8 @@ moonshot_checklist:
   enabled: true
   # Count of checks.* set to true required to allow entry. Use 0 until you flip checks from research.
   min_score_to_allow: 0
-  # Hard caps from your checklist.
-  max_position_usdc: 15
+  # Hard caps from your checklist (per buy notional; align with moonshot target_usdc lines).
+  max_position_usdc: 40
   max_microcap_position_usdc: 7
   max_presale_position_usdc: 5
   max_open_moonshots: 8

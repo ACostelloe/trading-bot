@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from bot.entry_gates import moonshot_rebalance_skip_reason
 from bot.exchange import build_exchange
 from bot.logger import get_logger
+from bot.account_equity import estimate_total_account_equity_usdt
 from bot.moonshot_automation import (
     estimate_equity_quote,
     maybe_scanner_refresh,
@@ -288,14 +289,23 @@ def main() -> None:
             equity_quote = 0.0
             open_moon_n = 0
             if checklist_on:
-                equity_quote = estimate_equity_quote(
-                    exchange,
-                    quote_asset=quote_asset,
-                    free_bal=free_bal,
-                    total_bal=total_bal,
-                    valuation_symbols=moonshot_syms,
-                    logger=logger,
-                )
+                ev_mode = str((settings.get("risk") or {}).get("equity_valuation") or "binance_total").strip()
+                if ev_mode == "moonshot_symbols_only":
+                    equity_quote = estimate_equity_quote(
+                        exchange,
+                        quote_asset=quote_asset,
+                        free_bal=free_bal,
+                        total_bal=total_bal,
+                        valuation_symbols=moonshot_syms,
+                        logger=logger,
+                    )
+                else:
+                    equity_quote = estimate_total_account_equity_usdt(exchange, logger)
+                    logger.info(
+                        "[MOONSHOT_RUN] equity_binance_est_usdt=%.2f (risk.starting_balance_usdt=%s)",
+                        equity_quote,
+                        (settings.get("risk") or {}).get("starting_balance_usdt"),
+                    )
                 open_moon_n = moonshot_open_positions_count(ledger, moonshot_syms)
 
             for plan in plans:
@@ -520,7 +530,7 @@ def main() -> None:
                         symbol=plan.symbol,
                         entry_notional=float(buy_notional),
                         current_equity=float(equity_quote) if checklist_on else float(
-                            settings.get("risk", {}).get("starting_balance_usdt", 1000.0)
+                            settings.get("risk", {}).get("starting_balance_usdt", 347.0)
                         ),
                         open_positions_count=int(open_moon_n) if checklist_on else 0,
                         config=settings,

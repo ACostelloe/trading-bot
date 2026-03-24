@@ -44,12 +44,26 @@ moonshot:
   scanner_sync:
     mode: append
     default_target_usdc: 10
-    max_append: 8
+    # Lock to manual assets below (no new scanner-appended rows).
+    max_append: 0
 
   assets:
+    # Core: BTC spot + USDC sleeve (stable diversification). Totals ~220 USDT with alts below.
+    - name: Bitcoin
+      symbol: BTC/USDT
+      target_usdc: 60
+      enabled: true
+      manual_only: false
+
+    - name: USDC
+      symbol: USDC/USDT
+      target_usdc: 15
+      enabled: true
+      manual_only: false
+
     - name: Render
       symbol: RENDER/USDT
-      target_usdc: 20
+      target_usdc: 25
       enabled: true
       manual_only: false
 
@@ -61,7 +75,7 @@ moonshot:
 
     - name: Phala Network
       symbol: PHA/USDT
-      target_usdc: 10
+      target_usdc: 24
       enabled: true
       manual_only: false
 
@@ -73,13 +87,13 @@ moonshot:
 
     - name: Celer Network
       symbol: CELR/USDT
-      target_usdc: 10
+      target_usdc: 24
       enabled: true
       manual_only: false
 
     - name: Highstreet
       symbol: HIGH/USDT
-      target_usdc: 10
+      target_usdc: 24
       enabled: true
       manual_only: false
 
@@ -97,12 +111,12 @@ moonshot:
 
     - name: NFPrompt
       symbol: NFP/USDT
-      target_usdc: 5
+      target_usdc: 24
       enabled: true
       manual_only: false
 
     - name: Synapse
       symbol: SYN/USDT
-      target_usdc: 10
+      target_usdc: 24
       enabled: true
       manual_only: false
