@@ -2,6 +2,13 @@ moonshot:
   enabled_live_orders: false
   poll_seconds: 60
   quote_asset: USDT
+  # Bot-owned lots: orders use newClientOrderId prefix; startup rebuilds managed_qty/avg from tagged trades only.
+  client_order_id_prefix: msbot
+  reconcile_on_startup: true
+  reconcile_lookback_days: 90
+  reconcile_max_fetch_iterations: 40
+  # If true, startup always overwrites state from tagged trades (ignore file when tags exist).
+  reconcile_strict_tagged_only: false
   auto_convert_to_quote: true
   conversion_source_assets:
     - USDC
