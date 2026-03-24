@@ -1,0 +1,48 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Bot runtime / local state
+state.json
+bot.log
+
+# Backtest outputs
+backtests/backtest_trades.csv
+backtests/backtest_summary.csv
+backtests/backtest_symbol_stats.csv
+backtests/backtest_monthly_stats.csv
+backtests/backtest_equity_curve.png
+backtests/walk_forward_windows.csv
+backtests/walk_forward_train_grid_scores.csv
+backtests/walk_forward_oos_trades.csv
+backtests/walk_forward_oos_summary.csv
+backtests/walk_forward_oos_equity_curve.png
+approved_strategy_params.yaml
+backtests/walk_forward_stability_summary.csv
+backtests/walk_forward_freq_ema_fast.csv
+backtests/walk_forward_freq_ema_slow.csv
+backtests/walk_forward_freq_rsi_entry_min.csv
+backtests/walk_forward_freq_stop_atr_multiple.csv
+backtests/walk_forward_freq_full_combo.csv
+backtests/walk_forward_oos_perf_ema_fast.csv
+backtests/walk_forward_oos_perf_ema_slow.csv
+backtests/walk_forward_oos_perf_rsi_entry_min.csv
+backtests/walk_forward_oos_perf_stop_atr_multiple.csv
+backtests/walk_forward_oos_perf_full_combo.csv
+backtests/walk_forward_neighborhood_robustness.csv
+backtests/walk_forward_full_grid_local_robustness.csv
+backtests/walk_forward_strategy_grade.csv
+backtests/walk_forward_freq_ema_fast.png
+backtests/walk_forward_freq_ema_slow.png
+backtests/walk_forward_freq_rsi_entry_min.png
+backtests/walk_forward_freq_stop_atr_multiple.png

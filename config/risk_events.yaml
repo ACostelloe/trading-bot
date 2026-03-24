@@ -1,0 +1,24 @@
+risk_events:
+  default_size_multiplier: 1.0
+  symbols:
+    # Example unlock/event windows. Adjust as needed.
+    BNB/USDT:
+      - name: "sample_unlock_window"
+        start: "2026-04-01T00:00:00Z"
+        end: "2026-04-03T23:59:59Z"
+        size_multiplier: 0.5
+        block_new_entries: false
+
+rotation:
+  enabled: false
+  base_symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+  candidate_symbols:
+    - BNB/USDT
+    - LINK/USDT
+    - SUI/USDT
+  top_n_candidates: 1
+  ranking_file: "backtests/backtest_symbol_stats.csv"
+  ranking_metric: "total_net_pnl"

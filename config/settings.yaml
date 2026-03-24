@@ -1,0 +1,68 @@
+exchange:
+  name: binance
+  sandbox: false
+
+market:
+  symbols:
+    - BTC/USDT
+  timeframe: 15m
+  limit: 300
+  poll_seconds: 30
+
+strategy:
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  rsi_entry_min: 55
+  atr_period: 14
+  stop_atr_multiple: 1.5
+  take_profit_rr: 2.0
+
+risk:
+  starting_balance_usdt: 1000
+  account_risk_per_trade: 0.001
+  account_risk_per_trade_low: 0.001
+  account_risk_per_trade_medium: 0.001
+  account_risk_per_trade_high: 0.001
+  max_daily_loss: 0.02
+  max_open_positions_total: 2
+  max_open_positions_per_symbol: 1
+  min_order_notional: 20
+
+state:
+  file: state.json
+
+logging:
+  file: bot.log
+
+alerts:
+  telegram_enabled: false
+
+backtest:
+  fee_rate: 0.001
+  slippage_rate: 0.0005
+
+walk_forward:
+  train_bars: 180
+  test_bars: 60
+  step_bars: 60
+
+parameter_selection:
+  enabled: true
+  source_file: approved_strategy_params.yaml
+  require_stability_threshold: false
+  min_stability_score: 0.45
+  min_combo_win_pct: 25.0
+
+execution:
+  mode: live   # paper | live
+  require_explicit_live_flag: true
+  live_min_notional_check: true
+  max_live_trades_per_day: 0
+  allow_multiple_positions: false
+  stablecoin_cash_buffer_usdt: 0
+  max_consecutive_api_errors: 5
+  # Temporary plumbing test helper: none | buy | sell
+  manual_signal_override: none
+  # When manual_signal_override=buy, target this USDT notional.
+  manual_buy_usdt: 250
