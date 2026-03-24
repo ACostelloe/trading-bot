@@ -1,5 +1,5 @@
 moonshot:
-  enabled_live_orders: false
+  enabled_live_orders: true
   poll_seconds: 60
   quote_asset: USDT
   # Bot-owned lots: orders use newClientOrderId prefix; startup rebuilds managed_qty/avg from tagged trades only.
