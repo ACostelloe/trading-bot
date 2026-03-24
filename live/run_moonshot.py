@@ -318,13 +318,18 @@ def main() -> None:
                     needed_notional = max(0.0, plan.target_usdc - position_value)
                     spendable_quote = max(0.0, quote_free - stablecoin_buffer)
                     buy_notional = min(needed_notional, spendable_quote)
-                    if buy_notional < min_order_notional:
+                    market_min_notional = float(
+                        (((market.get("limits") or {}).get("cost") or {}).get("min") or 0.0)
+                    )
+                    effective_min_notional = max(min_order_notional, market_min_notional)
+                    if buy_notional < effective_min_notional:
                         logger.info(
-                            "BUY SKIP %s need=%.2f spendable=%.2f min=%.2f",
+                            "BUY SKIP %s need=%.2f spendable=%.2f min=%.2f (market_min=%.2f)",
                             plan.symbol,
                             needed_notional,
                             spendable_quote,
-                            min_order_notional,
+                            effective_min_notional,
+                            market_min_notional,
                         )
                         continue
 
@@ -332,6 +337,16 @@ def main() -> None:
                     buy_qty = float(exchange.amount_to_precision(plan.symbol, buy_qty))
                     if buy_qty <= 0:
                         logger.info("BUY SKIP %s qty rounded to zero", plan.symbol)
+                        continue
+                    # Re-check notional after precision rounding to avoid exchange NOTIONAL filter failures.
+                    final_notional = buy_qty * last_price
+                    if final_notional < effective_min_notional:
+                        logger.info(
+                            "BUY SKIP %s rounded_notional=%.2f below min=%.2f",
+                            plan.symbol,
+                            final_notional,
+                            effective_min_notional,
+                        )
                         continue
 
                     if enabled_live_orders:
