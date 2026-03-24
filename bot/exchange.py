@@ -12,14 +12,17 @@ def build_exchange(config: dict):
     sandbox = config["exchange"].get("sandbox", True)
 
     exchange_class = getattr(ccxt, exchange_name)
+    opts: dict = {
+        "defaultType": "spot",
+    }
+    if str(exchange_name).lower() == "binance":
+        opts["warnOnFetchOpenOrdersWithoutSymbol"] = False
     exchange = exchange_class(
         {
             "apiKey": os.getenv("BINANCE_API_KEY", ""),
             "secret": os.getenv("BINANCE_API_SECRET", ""),
             "enableRateLimit": True,
-            "options": {
-                "defaultType": "spot",
-            },
+            "options": opts,
         }
     )
 

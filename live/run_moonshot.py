@@ -526,6 +526,11 @@ def main() -> None:
                         )
                         continue
 
+                    _risk = settings.get("risk") or {}
+                    _sb = float(_risk.get("starting_balance_usdt") or 347.0)
+                    _dd_pct = (
+                        max(0.0, (_sb - float(equity_quote)) / _sb * 100.0) if _sb > 0 else 0.0
+                    )
                     mdec = evaluate_moonshot_entry(
                         symbol=plan.symbol,
                         entry_notional=float(buy_notional),
@@ -546,6 +551,8 @@ def main() -> None:
                                 "reasons": mdec.reasons,
                                 "entry_notional": buy_notional,
                                 "equity_quote_est": equity_quote,
+                                "starting_balance_usdt": _sb,
+                                "drawdown_pct_vs_start": round(_dd_pct, 4),
                                 "open_moonshot_positions": open_moon_n,
                             },
                             structured_logger=structured,
