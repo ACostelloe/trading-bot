@@ -1,5 +1,5 @@
 # Sized for ~$347 account (see config/settings.yaml risk.starting_balance_usdt).
-# Enabled targets below sum to ~$220; leaves USDT headroom for fees, drift, and new fills.
+# Sum of target_usdc is aspirational — disable rows or lower targets if cash cannot fund all sleeves.
 moonshot:
   enabled_live_orders: true
   poll_seconds: 60
@@ -73,7 +73,7 @@ moonshot:
     - name: AIOZ Network
       symbol: AIOZ/USDT
       target_usdc: 15
-      enabled: false
+      enabled: true
       manual_only: false
 
     - name: Phala Network
@@ -121,5 +121,60 @@ moonshot:
     - name: Synapse
       symbol: SYN/USDT
       target_usdc: 24
+      enabled: true
+      manual_only: false
+
+    # --- Narrative sleeve (scanner category_bonus: AI / Solana / depin / RWA) ---
+    - name: Fetch.ai
+      symbol: FET/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Bittensor
+      symbol: TAO/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Jupiter
+      symbol: JUP/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Bonk
+      symbol: BONK/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Drift
+      symbol: DRIFT/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Akash Network
+      symbol: AKT/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Helium
+      symbol: HNT/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Ondo Finance
+      symbol: ONDO/USDT
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Maple Finance
+      symbol: MPL/USDT
+      target_usdc: 10
       enabled: true
       manual_only: false

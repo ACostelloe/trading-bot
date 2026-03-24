@@ -1,0 +1,15 @@
+# Base ticker -> CoinGecko id (improves category bonuses: AI, depin, solana-ecosystem, rwa, etc.)
+# https://api.coingecko.com/api/v3/coins/list
+map:
+  RENDER: render-token
+  PHA: phala-network
+  FET: fetch-ai
+  TAO: bittensor
+  JUP: jupiter-exchange-solana
+  BONK: bonk
+  DRIFT: drift-protocol
+  AKT: akash-network
+  AIOZ: aioz-network
+  HNT: helium
+  ONDO: ondo-finance
+  MPL: maple

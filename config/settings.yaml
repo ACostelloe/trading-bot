@@ -96,7 +96,8 @@ moonshot_checklist:
   max_position_usdc: 70
   max_microcap_position_usdc: 7
   max_presale_position_usdc: 5
-  max_open_moonshots: 8
+  # Raise when portfolio lists many symbols; checklist counts open moonshot positions with tracked qty.
+  max_open_moonshots: 20
   max_total_drawdown_pause_pct: 25
   # Optional symbol classifiers for stricter caps.
   microcap_symbols: []
