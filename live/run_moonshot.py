@@ -13,6 +13,10 @@ from bot.entry_gates import moonshot_rebalance_skip_reason
 from bot.exchange import build_exchange
 from bot.logger import get_logger
 from bot.account_equity import estimate_total_account_equity_usdt
+from bot.binance_conversion import (
+    ensure_binance_spot_before_stable_sell,
+    merge_binance_funding_into_free,
+)
 from bot.moonshot_automation import (
     estimate_equity_quote,
     maybe_scanner_refresh,
@@ -70,13 +74,13 @@ def maybe_convert_to_quote(
     source_assets: list[str],
     min_conversion_notional: float,
 ) -> float:
+    # Include Binance funding-wallet stables in sizing (spot-only fetch misses them).
+    free_bal = merge_binance_funding_into_free(exchange, free_bal, logger)
     current_quote_free = float(free_bal.get(quote_asset, 0.0) or 0.0)
     if needed_quote <= current_quote_free:
         return current_quote_free
 
     deficit = needed_quote - current_quote_free
-    if deficit < min_conversion_notional:
-        return current_quote_free
 
     for src in source_assets:
         src = str(src).upper()
@@ -101,8 +105,13 @@ def maybe_convert_to_quote(
             continue
 
         convert_quote = min(deficit, max_quote_from_src)
-        if convert_quote < min_conversion_notional:
+        if convert_quote <= 0:
             continue
+        # Exchange min notional: sell at least min_conversion_notional when we have room.
+        if max_quote_from_src < min_conversion_notional:
+            continue
+        if convert_quote < min_conversion_notional:
+            convert_quote = min(min_conversion_notional, max_quote_from_src)
 
         sell_qty = convert_quote / px
         sell_qty = float(exchange.amount_to_precision(pair, sell_qty))
@@ -110,6 +119,7 @@ def maybe_convert_to_quote(
             continue
 
         if enabled_live_orders:
+            ensure_binance_spot_before_stable_sell(exchange, src, sell_qty, logger)
             order = exchange.create_market_sell_order(pair, sell_qty)
             logger.info(
                 "AUTO CONVERT %s->%s qty=%.8f est_quote=%.2f | order_id=%s",

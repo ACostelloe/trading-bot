@@ -11,6 +11,7 @@ moonshot:
   reconcile_max_fetch_iterations: 40
   # If true, startup always overwrites state from tagged trades (ignore file when tags exist).
   reconcile_strict_tagged_only: false
+  # Sells USDC/FDUSD/… for USDT on spot; Binance funding-wallet balances are included and moved to spot before the sell.
   auto_convert_to_quote: true
   conversion_source_assets:
     - USDC
