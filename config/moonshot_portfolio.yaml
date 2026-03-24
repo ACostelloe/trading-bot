@@ -1,7 +1,14 @@
 moonshot:
   enabled_live_orders: false
   poll_seconds: 60
-  quote_asset: USDC
+  quote_asset: USDT
+  auto_convert_to_quote: true
+  conversion_source_assets:
+    - USDC
+    - FDUSD
+    - TUSD
+    - BUSD
+  min_conversion_notional: 5
   stablecoin_buffer_quote: 0
   min_order_notional: 5
   rebalance_tolerance_pct: 5
@@ -12,61 +19,61 @@ moonshot:
 
   assets:
     - name: Render
-      symbol: RNDR/USDC
+      symbol: RENDER/USDT
       target_usdc: 20
       enabled: true
       manual_only: false
 
     - name: AIOZ Network
-      symbol: AIOZ/USDC
+      symbol: AIOZ/USDT
       target_usdc: 15
-      enabled: true
+      enabled: false
       manual_only: false
 
     - name: Phala Network
-      symbol: PHA/USDC
+      symbol: PHA/USDT
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: ZetaChain
-      symbol: ZETA/USDC
+      symbol: ZETA/USDT
       target_usdc: 10
-      enabled: true
+      enabled: false
       manual_only: false
 
     - name: Celer Network
-      symbol: CELR/USDC
+      symbol: CELR/USDT
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Highstreet
-      symbol: HIGH/USDC
+      symbol: HIGH/USDT
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Verasity
-      symbol: VRA/USDC
+      symbol: VRA/USDT
       target_usdc: 10
-      enabled: true
+      enabled: false
       manual_only: false
 
     - name: DIMO
-      symbol: DIMO/USDC
+      symbol: DIMO/USDT
       target_usdc: 10
-      enabled: true
+      enabled: false
       manual_only: false
 
     - name: NFPrompt
-      symbol: NFP/USDC
+      symbol: NFP/USDT
       target_usdc: 5
       enabled: true
       manual_only: false
 
     - name: Synapse
-      symbol: SYN/USDC
-      target_usdc: 0
-      enabled: false
+      symbol: SYN/USDT
+      target_usdc: 10
+      enabled: true
       manual_only: false

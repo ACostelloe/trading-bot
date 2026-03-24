@@ -77,6 +77,84 @@ def update_state_after_sell(state: dict, symbol: str, sell_qty: float) -> None:
         row["avg_entry"] = 0.0
 
 
+def maybe_convert_to_quote(
+    *,
+    exchange,
+    quote_asset: str,
+    free_bal: dict,
+    needed_quote: float,
+    enabled_live_orders: bool,
+    logger,
+    source_assets: list[str],
+    min_conversion_notional: float,
+) -> float:
+    current_quote_free = float(free_bal.get(quote_asset, 0.0) or 0.0)
+    if needed_quote <= current_quote_free:
+        return current_quote_free
+
+    deficit = needed_quote - current_quote_free
+    if deficit < min_conversion_notional:
+        return current_quote_free
+
+    for src in source_assets:
+        src = str(src).upper()
+        if src == quote_asset:
+            continue
+        pair = f"{src}/{quote_asset}"
+        market = exchange.markets.get(pair)
+        if not market or not bool(market.get("active", True)):
+            continue
+
+        src_free = float(free_bal.get(src, 0.0) or 0.0)
+        if src_free <= 0:
+            continue
+
+        ticker = exchange.fetch_ticker(pair)
+        px = float(ticker.get("last") or ticker.get("close") or 0.0)
+        if px <= 0:
+            continue
+
+        max_quote_from_src = src_free * px
+        if max_quote_from_src <= 0:
+            continue
+
+        convert_quote = min(deficit, max_quote_from_src)
+        if convert_quote < min_conversion_notional:
+            continue
+
+        sell_qty = convert_quote / px
+        sell_qty = float(exchange.amount_to_precision(pair, sell_qty))
+        if sell_qty <= 0:
+            continue
+
+        if enabled_live_orders:
+            order = exchange.create_market_sell_order(pair, sell_qty)
+            logger.info(
+                "AUTO CONVERT %s->%s qty=%.8f est_quote=%.2f | order_id=%s",
+                src,
+                quote_asset,
+                sell_qty,
+                convert_quote,
+                order.get("id"),
+            )
+        else:
+            logger.info(
+                "DRY RUN AUTO CONVERT %s->%s qty=%.8f est_quote=%.2f",
+                src,
+                quote_asset,
+                sell_qty,
+                convert_quote,
+            )
+
+        # Re-fetch balance after conversion (or dry-run estimate).
+        if enabled_live_orders:
+            fresh = exchange.fetch_balance().get("free", {}) or {}
+            return float(fresh.get(quote_asset, 0.0) or 0.0)
+        return current_quote_free + convert_quote
+
+    return current_quote_free
+
+
 def main() -> None:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(root)
@@ -97,6 +175,9 @@ def main() -> None:
     quote_asset = str(moonshot_root.get("quote_asset", "USDC")).upper()
     stablecoin_buffer = float(moonshot_root.get("stablecoin_buffer_quote", 20.0))
     min_order_notional = float(moonshot_root.get("min_order_notional", 10.0))
+    auto_convert_to_quote = bool(moonshot_root.get("auto_convert_to_quote", False))
+    conversion_source_assets = moonshot_root.get("conversion_source_assets", ["USDC"])
+    min_conversion_notional = float(moonshot_root.get("min_conversion_notional", 5.0))
     rebalance_tol = float(moonshot_root.get("rebalance_tolerance_pct", 5.0)) / 100.0
     take_profit_mult = 1.0 + (float(moonshot_root.get("take_profit_pct", 100.0)) / 100.0)
     tp_sell_fraction = float(moonshot_root.get("take_profit_sell_fraction", 0.30))
@@ -124,6 +205,23 @@ def main() -> None:
             free_bal = bal.get("free", {}) or {}
             total_bal = bal.get("total", {}) or {}
             quote_free = float(free_bal.get(quote_asset, 0.0) or 0.0)
+            total_target_notional = sum(
+                float(p.target_usdc)
+                for p in plans
+                if p.enabled and (not p.manual_only)
+            )
+            needed_quote = total_target_notional + stablecoin_buffer
+            if auto_convert_to_quote:
+                quote_free = maybe_convert_to_quote(
+                    exchange=exchange,
+                    quote_asset=quote_asset,
+                    free_bal=free_bal,
+                    needed_quote=needed_quote,
+                    enabled_live_orders=enabled_live_orders,
+                    logger=logger,
+                    source_assets=conversion_source_assets,
+                    min_conversion_notional=min_conversion_notional,
+                )
 
             for plan in plans:
                 if not plan.enabled:
@@ -131,8 +229,12 @@ def main() -> None:
                 if plan.manual_only:
                     logger.info("MANUAL ONLY %s (%s) target=%.2f", plan.name, plan.symbol, plan.target_usdc)
                     continue
-                if plan.symbol not in exchange.markets:
+                market = exchange.markets.get(plan.symbol)
+                if not market:
                     logger.info("SKIP %s (%s): symbol not available on exchange", plan.name, plan.symbol)
+                    continue
+                if not bool(market.get("active", True)):
+                    logger.info("SKIP %s (%s): market not active/tradable", plan.name, plan.symbol)
                     continue
 
                 try:
