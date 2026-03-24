@@ -1,3 +1,5 @@
+# Sized for ~$347 account (see config/settings.yaml risk.starting_balance_usdt).
+# Enabled targets below sum to ~$220; leaves USDT headroom for fees, drift, and new fills.
 moonshot:
   enabled_live_orders: true
   poll_seconds: 60
@@ -48,7 +50,7 @@ moonshot:
     max_append: 0
 
   assets:
-    # Core: BTC spot + USDC sleeve (stable diversification). Totals ~220 USDT with alts below.
+    # Core: BTC + USDC sleeve + alts. Enabled rows total ~$220 of ~$347 account baseline.
     - name: Bitcoin
       symbol: BTC/USDT
       target_usdc: 60
