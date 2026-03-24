@@ -22,6 +22,24 @@ from bot.live_execution import place_live_market_buy, place_live_market_sell
 from bot.moonshot_guard import evaluate_moonshot_entry
 
 
+def _extract_fill_details(order: dict | None, fallback_price: float, fallback_qty: float) -> tuple[float, float]:
+    o = order or {}
+    filled = float(o.get("filled") or 0.0)
+    avg = float(o.get("average") or 0.0)
+
+    # Fallback to raw exchange payload fields when normalized fields are absent.
+    info = o.get("info") or {}
+    if filled <= 0:
+        filled = float(info.get("executedQty") or fallback_qty or 0.0)
+    if avg <= 0:
+        cumm_quote = float(info.get("cummulativeQuoteQty") or 0.0)
+        if filled > 0 and cumm_quote > 0:
+            avg = cumm_quote / filled
+        else:
+            avg = fallback_price
+    return filled, avg
+
+
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -138,6 +156,7 @@ def main() -> None:
 
     while True:
         try:
+            cycle_had_error = False
             now_day = _as_utc_timestamp(pd.Timestamp.utcnow()).date()
             if now_day != trade_day:
                 trade_day = now_day
@@ -163,10 +182,16 @@ def main() -> None:
                             pos = portfolio.get_position(symbol)
                             if pos is None:
                                 continue
-                            qty = float(exchange.amount_to_precision(symbol, pos.qty))
-                            order = place_live_market_sell(exchange, symbol, qty)
-                            pnl = portfolio.close_position(symbol, last_price, fee_rate)
-                            msg = f"{trigger.upper()} LIVE SELL {symbol} qty={qty} @ {last_price:.2f} | pnl={pnl:.2f}"
+                            req_qty = float(exchange.amount_to_precision(symbol, pos.qty))
+                            order = place_live_market_sell(exchange, symbol, req_qty)
+                            filled_qty, filled_px = _extract_fill_details(order, fallback_price=last_price, fallback_qty=req_qty)
+                            if filled_qty <= 0:
+                                raise RuntimeError(f"Sell returned zero filled qty for {symbol}")
+                            pnl = portfolio.close_position(symbol, filled_px, fee_rate, qty=filled_qty)
+                            msg = (
+                                f"{trigger.upper()} LIVE SELL {symbol} qty={filled_qty:.6f} "
+                                f"@ {filled_px:.2f} | pnl={pnl:.2f}"
+                            )
                             logger.info("%s | order=%s", msg, order)
                             send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
                             save_portfolio(state_file, portfolio)
@@ -284,16 +309,19 @@ def main() -> None:
                             raise RuntimeError("Refusing to place live order while execution.mode != live")
 
                         order = place_live_market_buy(exchange, symbol, qty)
+                        filled_qty, filled_px = _extract_fill_details(order, fallback_price=float(signal.price), fallback_qty=qty)
+                        if filled_qty <= 0:
+                            raise RuntimeError(f"Buy returned zero filled qty for {symbol}")
                         portfolio.open_position(
                             symbol=symbol,
-                            qty=qty,
-                            entry_price=float(signal.price),
+                            qty=filled_qty,
+                            entry_price=filled_px,
                             stop_loss=float(signal.stop_loss),
                             take_profit=float(signal.take_profit),
                             fee_rate=fee_rate,
                             entry_time=str(last_row["timestamp"]),
                         )
-                        msg = f"LIVE BUY {symbol} qty={qty:.6f} @ {float(signal.price):.2f}"
+                        msg = f"LIVE BUY {symbol} qty={filled_qty:.6f} @ {filled_px:.2f}"
                         logger.info("%s | order=%s", msg, order)
                         send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
                         save_portfolio(state_file, portfolio)
@@ -303,16 +331,20 @@ def main() -> None:
                         pos = portfolio.get_position(symbol)
                         if pos is None:
                             continue
-                        qty = float(exchange.amount_to_precision(symbol, pos.qty))
-                        exit_px = float(signal.price or last_price)
-                        order = place_live_market_sell(exchange, symbol, qty)
-                        pnl = portfolio.close_position(symbol, exit_px, fee_rate)
-                        msg = f"LIVE SELL {symbol} qty={qty:.6f} @ {exit_px:.2f} | pnl={pnl:.2f}"
+                        req_qty = float(exchange.amount_to_precision(symbol, pos.qty))
+                        exit_px_hint = float(signal.price or last_price)
+                        order = place_live_market_sell(exchange, symbol, req_qty)
+                        filled_qty, filled_px = _extract_fill_details(order, fallback_price=exit_px_hint, fallback_qty=req_qty)
+                        if filled_qty <= 0:
+                            raise RuntimeError(f"Sell returned zero filled qty for {symbol}")
+                        pnl = portfolio.close_position(symbol, filled_px, fee_rate, qty=filled_qty)
+                        msg = f"LIVE SELL {symbol} qty={filled_qty:.6f} @ {filled_px:.2f} | pnl={pnl:.2f}"
                         logger.info("%s | order=%s", msg, order)
                         send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
                         save_portfolio(state_file, portfolio)
 
                 except Exception as symbol_exc:
+                    cycle_had_error = True
                     consecutive_errors += 1
                     logger.exception("Symbol cycle failed for %s: %s", symbol, symbol_exc)
                     send_telegram(
@@ -322,7 +354,8 @@ def main() -> None:
                     if consecutive_errors >= max_errors:
                         raise RuntimeError(f"Kill switch: consecutive API/errors reached {consecutive_errors}")
 
-            consecutive_errors = 0
+            if not cycle_had_error:
+                consecutive_errors = 0
             equity = portfolio.mark_to_market(latest_prices)
             logger.info(
                 "LIVE Portfolio Equity=%.2f Cash=%.2f RealizedPnL=%.2f OpenPositions=%d",

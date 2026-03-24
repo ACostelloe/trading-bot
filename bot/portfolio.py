@@ -83,22 +83,38 @@ class Portfolio:
             entry_fee=fee,
         )
 
-    def close_position(self, symbol: str, exit_price: float, fee_rate: float) -> float:
+    def close_position(self, symbol: str, exit_price: float, fee_rate: float, qty: float | None = None) -> float:
         pos = self.positions.get(symbol)
         if not pos:
             return 0.0
 
-        exit_notional = pos.qty * exit_price
+        close_qty = float(pos.qty if qty is None else qty)
+        if close_qty <= 0:
+            return 0.0
+        if close_qty > pos.qty:
+            close_qty = pos.qty
+
+        exit_notional = close_qty * exit_price
         exit_fee = exit_notional * fee_rate
 
         self.cash_usdt += exit_notional - exit_fee
 
-        net_pnl = (exit_notional - exit_fee) - (pos.entry_notional + pos.entry_fee)
+        # Realize cost basis proportionally when closing partial size.
+        ratio = close_qty / pos.qty if pos.qty > 0 else 0.0
+        entry_notional_closed = pos.entry_notional * ratio
+        entry_fee_closed = pos.entry_fee * ratio
+        net_pnl = (exit_notional - exit_fee) - (entry_notional_closed + entry_fee_closed)
 
         self.realized_pnl += net_pnl
         self.daily_pnl += net_pnl
 
-        del self.positions[symbol]
+        remaining_qty = pos.qty - close_qty
+        if remaining_qty <= 0:
+            del self.positions[symbol]
+        else:
+            pos.qty = remaining_qty
+            pos.entry_notional = max(0.0, pos.entry_notional - entry_notional_closed)
+            pos.entry_fee = max(0.0, pos.entry_fee - entry_fee_closed)
         return net_pnl
 
     def to_dict(self) -> dict:
