@@ -14,7 +14,12 @@ __pycache__/
 
 # Bot runtime / local state
 state.json
-bot.log
+*.log
+*.out
+moonshot_state.json
+unified_ledger.json
+research/multi_source_scan_state.json
+config/*.bak
 
 # Backtest outputs
 backtests/backtest_trades.csv
