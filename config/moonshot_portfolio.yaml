@@ -1,0 +1,78 @@
+moonshot:
+  enabled_live_orders: false
+  poll_seconds: 60
+  quote_asset: USDC
+  stablecoin_buffer_quote: 20
+  min_order_notional: 10
+  rebalance_tolerance_pct: 5
+  take_profit_pct: 100
+  take_profit_sell_fraction: 0.30
+  stop_loss_pct: 18
+  state_file: moonshot_state.json
+
+  assets:
+    - name: DeepSnitch AI
+      symbol: DSNT/USDC
+      target_usdc: 15
+      enabled: true
+      manual_only: false
+
+    - name: SkyAI
+      symbol: SKYAI/USDC
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Allora
+      symbol: ALLO/USDC
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: KGEN
+      symbol: KGEN/USDC
+      target_usdc: 10
+      enabled: true
+      manual_only: false
+
+    - name: Gaming Meme Hybrid
+      symbol: TBD/USDC
+      target_usdc: 10
+      enabled: false
+      manual_only: true
+
+    - name: DENT
+      symbol: DENT/USDC
+      target_usdc: 15
+      enabled: true
+      manual_only: false
+
+    - name: Ozak AI Presale
+      symbol: PRESALE_OZAK
+      target_usdc: 7
+      enabled: false
+      manual_only: true
+
+    - name: Pepeto Presale
+      symbol: PRESALE_PEPETO
+      target_usdc: 7
+      enabled: false
+      manual_only: true
+
+    - name: IPO Genie Presale
+      symbol: PRESALE_IPOGENIE
+      target_usdc: 6
+      enabled: false
+      manual_only: true
+
+    - name: Meme Slot 1
+      symbol: MEME1/USDC
+      target_usdc: 5
+      enabled: false
+      manual_only: true
+
+    - name: Meme Slot 2
+      symbol: MEME2/USDC
+      target_usdc: 5
+      enabled: false
+      manual_only: true
