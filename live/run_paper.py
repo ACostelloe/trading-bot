@@ -12,13 +12,22 @@ from bot.exchange import build_exchange
 from bot.market_data import fetch_ohlcv_df, is_data_fresh
 from bot.indicators import add_indicators
 from bot.strategy import generate_signal
-from bot.risk import check_trade_allowed
+from bot.entry_gates import evaluate_moonshot_gate_for_trend_entry, evaluate_trend_buy_gates
+from bot.event_controls import event_controls_for_symbol
 from bot.execution import handle_paper_buy, handle_paper_sell, check_stop_or_take_profit
+from bot.quote_context import build_quote_execution_context
 from bot.state import load_portfolio, save_portfolio
 from bot.logger import get_logger
 from bot.alerts import send_telegram
 from bot.parameter_manager import apply_approved_parameters, validate_approved_parameters
-from bot.moonshot_guard import evaluate_moonshot_entry
+from bot.structured_log import (
+    EVENT_POSITION_CLOSED,
+    EVENT_POSITION_OPENED,
+    EVENT_SIGNAL_GENERATED,
+    EVENT_TRADE_BLOCKED,
+    emit_event,
+    get_structured_logger,
+)
 
 
 def load_config(path: str) -> dict:
@@ -72,26 +81,6 @@ def resolve_symbols(base_config: dict, risk_cfg: dict, logger) -> list[str]:
         return market_symbols
 
 
-def event_controls_for_symbol(
-    symbol: str,
-    ts: pd.Timestamp,
-    risk_cfg: dict,
-) -> tuple[float, bool]:
-    events_root = risk_cfg.get("risk_events", {})
-    mult = float(events_root.get("default_size_multiplier", 1.0))
-    blocked = False
-    for ev in events_root.get("symbols", {}).get(symbol, []):
-        try:
-            start = pd.Timestamp(ev["start"], tz="UTC")
-            end = pd.Timestamp(ev["end"], tz="UTC")
-        except Exception:
-            continue
-        if start <= ts <= end:
-            mult = min(mult, float(ev.get("size_multiplier", 1.0)))
-            blocked = blocked or bool(ev.get("block_new_entries", False))
-    return max(mult, 0.0), blocked
-
-
 def _as_utc_timestamp(ts) -> pd.Timestamp:
     t = pd.Timestamp(ts)
     if t.tzinfo is None:
@@ -117,6 +106,10 @@ def main() -> None:
         config["strategy"]["stop_atr_multiple"],
     )
     risk_cfg = load_yaml_if_exists("config/risk_events.yaml")
+    moonshot_y = load_yaml_if_exists("config/moonshot_portfolio.yaml")
+    mroot = moonshot_y.get("moonshot", {})
+    quote_ctx = build_quote_execution_context(config, mroot)
+    structured_logger = get_structured_logger(config)
 
     exchange = build_exchange(config)
     symbols = resolve_symbols(config, risk_cfg, logger)
@@ -125,6 +118,9 @@ def main() -> None:
     poll_seconds = config["market"]["poll_seconds"]
     state_file = config["state"]["file"]
     fee_rate = float(config.get("backtest", {}).get("fee_rate", 0.001))
+    exec_cfg = config.get("execution") or {}
+    max_trades_per_day = int(exec_cfg.get("max_live_trades_per_day", 0))
+    allow_multiple_positions = bool(exec_cfg.get("allow_multiple_positions", False))
 
     portfolio = load_portfolio(
         state_file=state_file,
@@ -133,9 +129,16 @@ def main() -> None:
 
     logger.info("Multi-symbol paper bot started for %s on %s", ", ".join(symbols), timeframe)
 
+    trades_today = 0
+    trade_day = _as_utc_timestamp(pd.Timestamp.utcnow()).date()
+
     while True:
         try:
             latest_prices: dict[str, float] = {}
+            now_day = _as_utc_timestamp(pd.Timestamp.utcnow()).date()
+            if now_day != trade_day:
+                trade_day = now_day
+                trades_today = 0
 
             for symbol in symbols:
                 try:
@@ -153,6 +156,17 @@ def main() -> None:
                         trigger = check_stop_or_take_profit(portfolio, symbol, last_price)
                         if trigger:
                             result = handle_paper_sell(portfolio, symbol, last_price, fee_rate)
+                            emit_event(
+                                EVENT_POSITION_CLOSED,
+                                {
+                                    "channel": "paper",
+                                    "symbol": symbol,
+                                    "source": "trend",
+                                    "reason": trigger,
+                                    "pnl_quote": result["pnl"],
+                                },
+                                structured_logger=structured_logger,
+                            )
                             msg = f"{trigger.upper()} SELL {symbol} @ {last_price:.2f} | pnl={result['pnl']:.2f}"
                             logger.info(msg)
                             send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
@@ -167,81 +181,130 @@ def main() -> None:
                         signal.reason,
                         signal.price,
                     )
+                    emit_event(
+                        EVENT_SIGNAL_GENERATED,
+                        {
+                            "channel": "paper",
+                            "symbol": symbol,
+                            "action": signal.action,
+                            "reason": signal.reason,
+                            "price": signal.price,
+                        },
+                        structured_logger=structured_logger,
+                    )
 
                     if signal.action == "buy" and signal.price and signal.stop_loss and signal.take_profit:
-                        event_mult, event_block = event_controls_for_symbol(
-                            symbol,
-                            _as_utc_timestamp(last_row["timestamp"]),
-                            risk_cfg,
+                        spend_after = quote_ctx.spendable_trend_cash(symbol, portfolio.available_cash())
+                        pre_gate = evaluate_trend_buy_gates(
+                            symbol=symbol,
+                            signal_price=float(signal.price),
+                            signal_stop_loss=float(signal.stop_loss),
+                            signal_take_profit=float(signal.take_profit),
+                            bar_timestamp=_as_utc_timestamp(last_row["timestamp"]),
+                            risk_cfg=risk_cfg,
+                            config=config,
+                            available_cash=portfolio.available_cash(),
+                            open_positions_count=portfolio.open_positions_count(),
+                            already_in_symbol=portfolio.has_position(symbol),
+                            daily_pnl=portfolio.daily_pnl,
+                            fee_rate=fee_rate,
+                            starting_balance=float(config["risk"]["starting_balance_usdt"]),
+                            trades_today=trades_today,
+                            max_trades_per_day=max_trades_per_day,
+                            allow_multiple_positions=allow_multiple_positions,
+                            live_min_notional_check=bool(exec_cfg.get("live_min_notional_check", True)),
+                            market_min_cost=None,
+                            spendable_cash_after_buffer=spend_after,
+                            manual_buy_mode=False,
+                            manual_buy_notional=0.0,
                         )
-                        if event_block:
-                            logger.info("Buy blocked for %s: event_window_blocked", symbol)
+                        if not pre_gate.allowed:
+                            logger.info("Buy blocked for %s: %s", symbol, pre_gate.reason)
+                            emit_event(
+                                EVENT_TRADE_BLOCKED,
+                                {
+                                    "channel": "paper",
+                                    "symbol": symbol,
+                                    "side": "buy",
+                                    "reason": pre_gate.reason,
+                                    "meta": pre_gate.meta,
+                                },
+                                structured_logger=structured_logger,
+                            )
                             continue
 
-                        decision = check_trade_allowed(
-                            available_cash=portfolio.available_cash(),
-                            entry_price=signal.price,
-                            stop_price=signal.stop_loss,
+                        notional_pre = pre_gate.qty * float(signal.price)
+                        current_equity = portfolio.mark_to_market(latest_prices)
+                        moon_gate = evaluate_moonshot_gate_for_trend_entry(
+                            symbol=symbol,
+                            entry_notional=notional_pre,
+                            current_equity=current_equity,
+                            open_positions_count=portfolio.open_positions_count(),
                             config=config,
-                            total_open_positions=portfolio.open_positions_count(),
-                            already_in_symbol=portfolio.has_position(symbol),
-                            daily_pnl_fraction=portfolio.daily_pnl
-                            / max(config["risk"]["starting_balance_usdt"], 1),
-                            fee_rate=fee_rate,
+                            gate_result=pre_gate,
                         )
+                        if not moon_gate.allowed:
+                            logger.info("Buy blocked for %s: %s", symbol, moon_gate.reason)
+                            emit_event(
+                                EVENT_TRADE_BLOCKED,
+                                {
+                                    "channel": "paper",
+                                    "symbol": symbol,
+                                    "side": "buy",
+                                    "reason": moon_gate.reason,
+                                    "meta": moon_gate.meta,
+                                },
+                                structured_logger=structured_logger,
+                            )
+                            continue
 
-                        if decision.allowed:
-                            try:
-                                qty = decision.qty * event_mult
-                                notional = qty * float(signal.price)
-                                if qty <= 0 or notional < config["risk"]["min_order_notional"]:
-                                    logger.info(
-                                        "Buy blocked for %s: event_size_multiplier_too_small (mult=%.3f)",
-                                        symbol,
-                                        event_mult,
-                                    )
-                                    continue
-                                current_equity = portfolio.mark_to_market(latest_prices)
-                                moonshot = evaluate_moonshot_entry(
-                                    symbol=symbol,
-                                    entry_notional=notional,
-                                    current_equity=current_equity,
-                                    open_positions_count=portfolio.open_positions_count(),
-                                    config=config,
-                                )
-                                if not moonshot.allowed:
-                                    logger.info(
-                                        "Buy blocked for %s: moonshot_checklist_failed score=%d/%d reasons=%s",
-                                        symbol,
-                                        moonshot.score,
-                                        moonshot.min_required,
-                                        ";".join(moonshot.reasons),
-                                    )
-                                    continue
-                                result = handle_paper_buy(
-                                    portfolio=portfolio,
-                                    symbol=symbol,
-                                    qty=qty,
-                                    entry_price=signal.price,
-                                    stop_loss=signal.stop_loss,
-                                    take_profit=signal.take_profit,
-                                    fee_rate=fee_rate,
-                                    entry_time=_entry_time_str(last_row["timestamp"]),
-                                )
-                                msg = (
-                                    f"BUY {symbol} qty={result['qty']:.6f} @ {result['price']:.2f} "
-                                    f"SL={result['stop_loss']:.2f} TP={result['take_profit']:.2f}"
-                                )
-                                logger.info(msg)
-                                send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
-                                save_portfolio(state_file, portfolio)
-                            except ValueError as exc:
-                                logger.warning("Buy failed for %s: %s", symbol, exc)
-                        else:
-                            logger.info("Buy blocked for %s: %s", symbol, decision.reason)
+                        try:
+                            qty = moon_gate.qty
+                            result = handle_paper_buy(
+                                portfolio=portfolio,
+                                symbol=symbol,
+                                qty=qty,
+                                entry_price=signal.price,
+                                stop_loss=signal.stop_loss,
+                                take_profit=signal.take_profit,
+                                fee_rate=fee_rate,
+                                entry_time=_entry_time_str(last_row["timestamp"]),
+                            )
+                            emit_event(
+                                EVENT_POSITION_OPENED,
+                                {
+                                    "channel": "paper",
+                                    "symbol": symbol,
+                                    "source": "trend",
+                                    "qty": result["qty"],
+                                    "avg_price": result["price"],
+                                },
+                                structured_logger=structured_logger,
+                            )
+                            msg = (
+                                f"BUY {symbol} qty={result['qty']:.6f} @ {result['price']:.2f} "
+                                f"SL={result['stop_loss']:.2f} TP={result['take_profit']:.2f}"
+                            )
+                            logger.info(msg)
+                            send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])
+                            save_portfolio(state_file, portfolio)
+                            trades_today += 1
+                        except ValueError as exc:
+                            logger.warning("Buy failed for %s: %s", symbol, exc)
 
                     elif signal.action == "sell" and portfolio.has_position(symbol):
                         result = handle_paper_sell(portfolio, symbol, signal.price or last_price, fee_rate)
+                        emit_event(
+                            EVENT_POSITION_CLOSED,
+                            {
+                                "channel": "paper",
+                                "symbol": symbol,
+                                "source": "trend",
+                                "reason": "signal_sell",
+                                "pnl_quote": result["pnl"],
+                            },
+                            structured_logger=structured_logger,
+                        )
                         msg = f"SELL {symbol} @ {result['price']:.2f} | pnl={result['pnl']:.2f}"
                         logger.info(msg)
                         send_telegram(msg, enabled=config["alerts"]["telegram_enabled"])

@@ -18,7 +18,7 @@ from bot.exchange import build_exchange
 from bot.market_data import fetch_ohlcv_df
 from bot.indicators import add_indicators
 from bot.strategy import generate_signal
-from bot.risk import check_trade_allowed
+from bot.entry_gates import evaluate_moonshot_gate_for_trend_entry, evaluate_trend_buy_gates
 from bot.portfolio import Portfolio
 from bot.parameter_manager import apply_approved_parameters
 
@@ -26,6 +26,20 @@ from bot.parameter_manager import apply_approved_parameters
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_yaml_if_exists(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _as_utc_timestamp(ts) -> pd.Timestamp:
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        return t.tz_localize("UTC")
+    return t.tz_convert("UTC")
 
 
 def max_drawdown(equity_curve: list[float]) -> float:
@@ -132,20 +146,29 @@ def subset_symbol_data(
 def run_multi_symbol_backtest_on_data(
     data_by_symbol: dict[str, pd.DataFrame],
     config: dict,
+    *,
+    exchange=None,
+    risk_cfg: dict | None = None,
 ) -> tuple[list[dict], list[float], list[pd.Timestamp], float]:
     fee_rate = float(config.get("backtest", {}).get("fee_rate", 0.001))
     slippage_rate = float(config.get("backtest", {}).get("slippage_rate", 0.0005))
     starting_balance = float(config["risk"]["starting_balance_usdt"])
+    risk_cfg = risk_cfg or {}
+    exec_cfg = config.get("execution") or {}
+    max_trades_per_day = int(exec_cfg.get("max_live_trades_per_day", 0))
+    allow_multiple_positions = bool(exec_cfg.get("allow_multiple_positions", False))
 
     portfolio = Portfolio(cash_usdt=starting_balance)
     trades: list[dict] = []
     equity_curve: list[float] = []
     equity_timestamps: list[pd.Timestamp] = []
     last_known_prices: dict[str, float] = {}
+    trade_counts_by_day: dict = {}
 
     timeline = build_master_timeline(data_by_symbol)
 
     for current_time in timeline:
+        day_key = pd.Timestamp(current_time).date()
         for symbol, df in data_by_symbol.items():
             matching = df[df["timestamp"] == current_time]
             if matching.empty:
@@ -208,32 +231,67 @@ def run_multi_symbol_backtest_on_data(
                 signal = generate_signal(hist, config, in_position=False)
 
                 if signal.action == "buy" and signal.price and signal.stop_loss and signal.take_profit:
+                    trades_today = int(trade_counts_by_day.get(day_key, 0))
                     entry_price = float(signal.price) * (1 + slippage_rate)
+                    mkt = (exchange.markets.get(symbol) or {}) if exchange is not None else {}
+                    mco = float((((mkt.get("limits") or {}).get("cost") or {}).get("min") or 0.0) or 0.0)
+                    market_min_cost = mco if mco > 0 else None
 
-                    decision = check_trade_allowed(
-                        available_cash=portfolio.available_cash(),
-                        entry_price=entry_price,
-                        stop_price=float(signal.stop_loss),
+                    pre_gate = evaluate_trend_buy_gates(
+                        symbol=symbol,
+                        signal_price=entry_price,
+                        signal_stop_loss=float(signal.stop_loss),
+                        signal_take_profit=float(signal.take_profit),
+                        bar_timestamp=_as_utc_timestamp(current_time),
+                        risk_cfg=risk_cfg,
                         config=config,
-                        total_open_positions=portfolio.open_positions_count(),
+                        available_cash=portfolio.available_cash(),
+                        open_positions_count=portfolio.open_positions_count(),
                         already_in_symbol=portfolio.has_position(symbol),
-                        daily_pnl_fraction=portfolio.daily_pnl / max(starting_balance, 1),
+                        daily_pnl=portfolio.daily_pnl,
                         fee_rate=fee_rate,
+                        starting_balance=starting_balance,
+                        trades_today=trades_today,
+                        max_trades_per_day=max_trades_per_day,
+                        allow_multiple_positions=allow_multiple_positions,
+                        live_min_notional_check=bool(exec_cfg.get("live_min_notional_check", True)),
+                        market_min_cost=market_min_cost,
+                        spendable_cash_after_buffer=None,
+                        manual_buy_mode=False,
+                        manual_buy_notional=0.0,
                     )
+                    if not pre_gate.allowed:
+                        continue
 
-                    if decision.allowed:
-                        try:
-                            portfolio.open_position(
-                                symbol=symbol,
-                                qty=decision.qty,
-                                entry_price=entry_price,
-                                stop_loss=float(signal.stop_loss),
-                                take_profit=float(signal.take_profit),
-                                fee_rate=fee_rate,
-                                entry_time=str(current_time),
-                            )
-                        except ValueError:
-                            pass
+                    notional_pre = pre_gate.qty * entry_price
+                    current_equity = portfolio.mark_to_market(last_known_prices)
+                    moon_gate = evaluate_moonshot_gate_for_trend_entry(
+                        symbol=symbol,
+                        entry_notional=notional_pre,
+                        current_equity=current_equity,
+                        open_positions_count=portfolio.open_positions_count(),
+                        config=config,
+                        gate_result=pre_gate,
+                    )
+                    if not moon_gate.allowed:
+                        continue
+
+                    try:
+                        qty = moon_gate.qty
+                        if qty <= 0:
+                            continue
+                        portfolio.open_position(
+                            symbol=symbol,
+                            qty=qty,
+                            entry_price=entry_price,
+                            stop_loss=float(signal.stop_loss),
+                            take_profit=float(signal.take_profit),
+                            fee_rate=fee_rate,
+                            entry_time=str(current_time),
+                        )
+                        trade_counts_by_day[day_key] = trades_today + 1
+                    except ValueError:
+                        pass
 
         equity_curve.append(portfolio.mark_to_market(last_known_prices))
         equity_timestamps.append(current_time)
@@ -329,8 +387,10 @@ def main() -> None:
     os.chdir(_root)
 
     config = apply_approved_parameters(load_config("config/settings.yaml"))
+    risk_cfg = load_yaml_if_exists("config/risk_events.yaml")
 
     exchange = build_exchange(config)
+    exchange.load_markets()
     symbols = config["market"]["symbols"]
     timeframe = config["market"]["timeframe"]
 
@@ -384,7 +444,12 @@ def main() -> None:
             if not train_data:
                 continue
 
-            trades, equity_curve, _, final_equity = run_multi_symbol_backtest_on_data(train_data, train_cfg)
+            trades, equity_curve, _, final_equity = run_multi_symbol_backtest_on_data(
+                train_data,
+                train_cfg,
+                exchange=exchange,
+                risk_cfg=risk_cfg,
+            )
             summary = summarize_trades(
                 trades=trades,
                 starting_balance=float(train_cfg["risk"]["starting_balance_usdt"]),
@@ -432,6 +497,8 @@ def main() -> None:
         test_trades, test_equity_curve, test_timestamps, test_final_equity = run_multi_symbol_backtest_on_data(
             test_data,
             test_cfg,
+            exchange=exchange,
+            risk_cfg=risk_cfg,
         )
         test_summary = summarize_trades(
             trades=test_trades,

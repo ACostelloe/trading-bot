@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import os
-import secrets
 import sys
 import time
 from dataclasses import dataclass
@@ -11,9 +9,17 @@ import yaml
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from bot.entry_gates import moonshot_rebalance_skip_reason
 from bot.exchange import build_exchange
 from bot.logger import get_logger
-from bot.moonshot_lots import apply_trade_to_avg_cost, trade_client_order_id
+from bot.quote_context import build_quote_execution_context
+from bot.unified_ledger import (
+    SOURCE_MOONSHOT,
+    UnifiedLedger,
+    estimate_fee_quote,
+    full_reconcile_snapshot,
+    make_client_order_id,
+)
 
 
 @dataclass
@@ -28,18 +34,6 @@ class AssetPlan:
 def load_yaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
-
-def load_json(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_json(path: str, data: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
 
 
 def parse_asset_plans(cfg: dict) -> list[AssetPlan]:
@@ -57,14 +51,6 @@ def parse_asset_plans(cfg: dict) -> list[AssetPlan]:
     return plans
 
 
-def make_moonshot_client_order_id(symbol: str, prefix: str) -> str:
-    """Binance clientOrderId max 36 chars; must stay unique enough for spot orders."""
-    sym = symbol.replace("/", "").replace(":", "")[:8]
-    suf = secrets.token_hex(4)
-    cid = f"{prefix}{sym}{suf}"
-    return cid[:36]
-
-
 def extract_order_fill(order: dict | None, fallback_qty: float, fallback_px: float) -> tuple[float, float]:
     o = order or {}
     filled = float(o.get("filled") or 0.0)
@@ -79,163 +65,6 @@ def extract_order_fill(order: dict | None, fallback_qty: float, fallback_px: flo
         else:
             avg = fallback_px
     return filled, avg
-
-
-def read_managed_row(state: dict, symbol: str) -> tuple[float, float]:
-    row = state.get(symbol) or {}
-    mq = row.get("managed_qty", row.get("qty"))
-    if mq is None:
-        mq = 0.0
-    mq = float(mq or 0.0)
-    ae = float(row.get("avg_entry", 0.0) or 0.0)
-    return mq, ae
-
-
-def write_managed_row(state: dict, symbol: str, managed_qty: float, avg_entry: float) -> None:
-    state[symbol] = {"managed_qty": float(managed_qty), "avg_entry": float(avg_entry)}
-
-
-def apply_buy_fill_state(state: dict, symbol: str, buy_qty: float, buy_price: float) -> None:
-    old_mq, old_avg = read_managed_row(state, symbol)
-    new_mq = old_mq + buy_qty
-    if new_mq <= 0:
-        write_managed_row(state, symbol, 0.0, 0.0)
-        return
-    new_avg = ((old_mq * old_avg) + (buy_qty * buy_price)) / new_mq
-    write_managed_row(state, symbol, new_mq, new_avg)
-
-
-def apply_sell_fill_state(state: dict, symbol: str, sold_qty: float) -> None:
-    old_mq, old_avg = read_managed_row(state, symbol)
-    sold_qty = max(0.0, min(float(sold_qty), old_mq))
-    new_mq = max(0.0, old_mq - sold_qty)
-    if new_mq <= 0:
-        write_managed_row(state, symbol, 0.0, 0.0)
-    else:
-        write_managed_row(state, symbol, new_mq, old_avg)
-
-
-def fetch_tagged_trades(
-    exchange,
-    symbol: str,
-    client_prefix: str,
-    since_ms: int,
-    max_fetch_iterations: int,
-    logger,
-) -> list[dict]:
-    trades: list[dict] = []
-    cursor_since = since_ms
-    for _ in range(max(1, max_fetch_iterations)):
-        batch = exchange.fetch_my_trades(symbol, since=cursor_since, limit=500)
-        if not batch:
-            break
-        tagged = [t for t in batch if trade_client_order_id(t).startswith(client_prefix)]
-        trades.extend(tagged)
-        if len(batch) < 500:
-            break
-        cursor_since = int(batch[-1]["timestamp"] or 0) + 1
-        if cursor_since <= since_ms:
-            break
-    trades.sort(key=lambda x: int(x.get("timestamp") or 0))
-    warn_after = 4000
-    if len(trades) >= warn_after:
-        logger.warning(
-            "%s: %d tagged trades in window — reconcile may be slow; narrow lookback or archive state",
-            symbol,
-            len(trades),
-        )
-    return trades
-
-
-def reconcile_position_from_tagged_trades(
-    exchange,
-    symbol: str,
-    client_prefix: str,
-    since_ms: int,
-    max_fetch_iterations: int,
-    logger,
-) -> tuple[float, float]:
-    base_code, quote_code = symbol.split("/")
-    trades = fetch_tagged_trades(
-        exchange, symbol, client_prefix, since_ms, max_fetch_iterations, logger
-    )
-    qty = 0.0
-    cost_basis = 0.0
-    for t in trades:
-        qty, cost_basis = apply_trade_to_avg_cost(qty, cost_basis, t, base_code, quote_code)
-    avg = cost_basis / qty if qty > 0 else 0.0
-    return qty, avg
-
-
-def run_startup_reconcile(
-    exchange,
-    plans: list[AssetPlan],
-    state: dict,
-    moonshot_root: dict,
-    logger,
-) -> None:
-    if not moonshot_root.get("reconcile_on_startup", True):
-        return
-    prefix = str(moonshot_root.get("client_order_id_prefix", "msbot"))
-    lookback_days = int(moonshot_root.get("reconcile_lookback_days", 90))
-    max_fetch_iterations = int(moonshot_root.get("reconcile_max_fetch_iterations", 40))
-    since_ms = int(time.time() * 1000) - lookback_days * 86400 * 1000
-
-    for plan in plans:
-        if not plan.enabled or plan.manual_only:
-            continue
-        market = exchange.markets.get(plan.symbol)
-        if not market or not bool(market.get("active", True)):
-            continue
-        tag_mq, tag_av = reconcile_position_from_tagged_trades(
-            exchange, plan.symbol, prefix, since_ms, max_fetch_iterations, logger
-        )
-        file_mq, file_av = read_managed_row(state, plan.symbol)
-        strict = bool(moonshot_root.get("reconcile_strict_tagged_only", False))
-
-        if strict and tag_mq > 1e-12 and tag_av > 0:
-            write_managed_row(state, plan.symbol, tag_mq, tag_av)
-            logger.info(
-                "RECONCILE(strict) %s managed_qty=%.8f avg_entry=%.8f (tagged prefix=%s)",
-                plan.symbol,
-                tag_mq,
-                tag_av,
-                prefix,
-            )
-        elif tag_mq > 1e-12 and tag_av > 0 and file_mq > 1e-12:
-            rel = abs(tag_mq - file_mq) / max(file_mq, 1e-12)
-            if rel <= 0.05:
-                write_managed_row(state, plan.symbol, tag_mq, tag_av)
-                logger.info(
-                    "RECONCILE %s managed_qty=%.8f avg_entry=%.8f (tagged agrees with file within 5%%)",
-                    plan.symbol,
-                    tag_mq,
-                    tag_av,
-                )
-            else:
-                logger.warning(
-                    "%s: tagged managed=%.8f vs file=%.8f (%.1f%% diff) — keeping FILE state; "
-                    "enable reconcile_strict_tagged_only or widen reconcile_lookback_days",
-                    plan.symbol,
-                    tag_mq,
-                    file_mq,
-                    rel * 100,
-                )
-        elif tag_mq > 1e-12 and tag_av > 0:
-            write_managed_row(state, plan.symbol, tag_mq, tag_av)
-            logger.info(
-                "RECONCILE %s managed_qty=%.8f avg_entry=%.8f (from tagged trades only)",
-                plan.symbol,
-                tag_mq,
-                tag_av,
-            )
-        else:
-            if file_mq > 0:
-                logger.warning(
-                    "%s: no tagged trades in lookback; keeping file managed_qty=%.8f",
-                    plan.symbol,
-                    file_mq,
-                )
 
 
 def maybe_convert_to_quote(
@@ -322,6 +151,7 @@ def main() -> None:
 
     settings = load_yaml("config/settings.yaml")
     moonshot_root = load_yaml("config/moonshot_portfolio.yaml").get("moonshot", {})
+    quote_ctx = build_quote_execution_context(settings, moonshot_root)
     logger = get_logger(settings["logging"]["file"])
 
     if settings["exchange"].get("sandbox", True):
@@ -333,18 +163,19 @@ def main() -> None:
 
     enabled_live_orders = bool(moonshot_root.get("enabled_live_orders", False))
     poll_seconds = int(moonshot_root.get("poll_seconds", 60))
-    quote_asset = str(moonshot_root.get("quote_asset", "USDC")).upper()
-    stablecoin_buffer = float(moonshot_root.get("stablecoin_buffer_quote", 20.0))
+    quote_asset = str(quote_ctx.moonshot_quote_asset or moonshot_root.get("quote_asset", "USDC")).upper()
+    stablecoin_buffer = float(quote_ctx.moonshot_spend_buffer_quote)
     min_order_notional = float(moonshot_root.get("min_order_notional", 10.0))
-    auto_convert_to_quote = bool(moonshot_root.get("auto_convert_to_quote", False))
-    conversion_source_assets = moonshot_root.get("conversion_source_assets", ["USDC"])
-    min_conversion_notional = float(moonshot_root.get("min_conversion_notional", 5.0))
+    auto_convert_to_quote = bool(quote_ctx.conversion.enabled)
+    conversion_source_assets = list(quote_ctx.conversion.source_assets)
+    min_conversion_notional = float(quote_ctx.conversion.min_conversion_notional)
     rebalance_tol = float(moonshot_root.get("rebalance_tolerance_pct", 5.0)) / 100.0
     take_profit_mult = 1.0 + (float(moonshot_root.get("take_profit_pct", 100.0)) / 100.0)
     tp_sell_fraction = float(moonshot_root.get("take_profit_sell_fraction", 0.30))
     stop_loss_mult = 1.0 - (float(moonshot_root.get("stop_loss_pct", 18.0)) / 100.0)
-    state_file = str(moonshot_root.get("state_file", "moonshot_state.json"))
+    legacy_moonshot_state = str(moonshot_root.get("state_file", "moonshot_state.json"))
     client_order_prefix = str(moonshot_root.get("client_order_id_prefix", "msbot"))
+    fee_rate = float(settings.get("backtest", {}).get("fee_rate", 0.001))
 
     plans = parse_asset_plans(moonshot_root)
     if not plans:
@@ -352,16 +183,56 @@ def main() -> None:
 
     exchange = build_exchange(settings)
     exchange.load_markets()
-    state = load_json(state_file)
-    run_startup_reconcile(exchange, plans, state, moonshot_root, logger)
-    save_json(state_file, state)
+
+    ledger_cfg = settings.get("ledger") or {}
+    ledger_path = ledger_cfg.get("file", "unified_ledger.json")
+    if not os.path.isabs(ledger_path):
+        ledger_path = os.path.join(root, ledger_path)
+    ledger = UnifiedLedger.load(ledger_path, default_quote=quote_asset)
+    ledger.path = ledger_path
+    trend_symbols = list(settings.get("market", {}).get("symbols", []))
+    moonshot_syms = [p.symbol for p in plans if p.enabled and not p.manual_only]
+    trend_prefix = str(ledger_cfg.get("trend_client_order_prefix", "trbot"))
+    strict_led = bool(
+        ledger_cfg.get(
+            "strict_reconcile_tagged_only",
+            moonshot_root.get("reconcile_strict_tagged_only", False),
+        )
+    )
+    legacy_path = legacy_moonshot_state
+    if not os.path.isabs(legacy_path):
+        legacy_path = os.path.join(root, legacy_path)
+
+    if bool(ledger_cfg.get("reconcile_on_startup", moonshot_root.get("reconcile_on_startup", True))):
+        full_reconcile_snapshot(
+            exchange,
+            ledger,
+            trend_symbols=trend_symbols,
+            moonshot_symbols=moonshot_syms,
+            trend_prefix=trend_prefix,
+            moonshot_prefix=client_order_prefix,
+            lookback_days=int(
+                ledger_cfg.get("reconcile_lookback_days", moonshot_root.get("reconcile_lookback_days", 90))
+            ),
+            max_fetch_iterations=int(
+                ledger_cfg.get(
+                    "reconcile_max_fetch_iterations",
+                    moonshot_root.get("reconcile_max_fetch_iterations", 40),
+                )
+            ),
+            strict_reconcile=strict_led,
+            moonshot_legacy_path=legacy_path if os.path.exists(legacy_path) else None,
+            logger=logger,
+        )
+    ledger.save()
 
     logger.info(
-        "Moonshot runner started: live_orders=%s quote=%s assets=%d (tracked-lot prefix=%s)",
+        "Moonshot runner started: live_orders=%s quote=%s assets=%d (moonshot prefix=%s ledger=%s)",
         enabled_live_orders,
         quote_asset,
         len(plans),
         client_order_prefix,
+        ledger_path,
     )
 
     while True:
@@ -420,8 +291,14 @@ def main() -> None:
                         )
                         continue
 
-                    exchange_total_base = float(total_bal.get(base_asset, 0.0) or 0.0)
-                    managed_qty, avg_entry = read_managed_row(state, plan.symbol)
+                    ledger.update_exchange_from_balance(
+                        plan.symbol,
+                        float(free_bal.get(base_asset, 0.0) or 0.0),
+                        float(total_bal.get(base_asset, 0.0) or 0.0),
+                    )
+                    exchange_total_base = ledger.ensure_symbol(plan.symbol).exchange_total_base
+                    ms = ledger.slice(plan.symbol, SOURCE_MOONSHOT)
+                    managed_qty, avg_entry = ms.tracked_qty, ms.avg_entry
                     if managed_qty > exchange_total_base + 1e-8:
                         logger.warning(
                             "%s: managed_qty %.8f exceeds exchange total %.8f — sells capped; review state/reconcile",
@@ -439,14 +316,21 @@ def main() -> None:
                             sell_qty = min(sell_qty, managed_qty, exchange_total_base)
                             if sell_qty > 0:
                                 skip_buy_this_tick = True
-                                cid = make_moonshot_client_order_id(plan.symbol, client_order_prefix)
+                                cid = make_client_order_id(plan.symbol, client_order_prefix)
                                 if enabled_live_orders:
                                     order = exchange.create_market_sell_order(
                                         plan.symbol, sell_qty, {"newClientOrderId": cid}
                                     )
                                     filled, fill_px = extract_order_fill(order, sell_qty, last_price)
                                     filled = min(filled, managed_qty, exchange_total_base)
-                                    apply_sell_fill_state(state, plan.symbol, filled)
+                                    fee_q = estimate_fee_quote(order, filled, fill_px, quote_asset, fee_rate)
+                                    ledger.apply_sell(
+                                        plan.symbol,
+                                        SOURCE_MOONSHOT,
+                                        filled,
+                                        fill_px,
+                                        fee_q,
+                                    )
                                     logger.info(
                                         "TP SELL %s qty=%.8f (filled=%.8f) @ %.8f | order_id=%s",
                                         plan.symbol,
@@ -468,14 +352,21 @@ def main() -> None:
                             sell_qty = min(sell_qty, managed_qty, exchange_total_base)
                             if sell_qty > 0:
                                 skip_buy_this_tick = True
-                                cid = make_moonshot_client_order_id(plan.symbol, client_order_prefix)
+                                cid = make_client_order_id(plan.symbol, client_order_prefix)
                                 if enabled_live_orders:
                                     order = exchange.create_market_sell_order(
                                         plan.symbol, sell_qty, {"newClientOrderId": cid}
                                     )
                                     filled, fill_px = extract_order_fill(order, sell_qty, last_price)
                                     filled = min(filled, managed_qty, exchange_total_base)
-                                    apply_sell_fill_state(state, plan.symbol, filled)
+                                    fee_q = estimate_fee_quote(order, filled, fill_px, quote_asset, fee_rate)
+                                    ledger.apply_sell(
+                                        plan.symbol,
+                                        SOURCE_MOONSHOT,
+                                        filled,
+                                        fill_px,
+                                        fee_q,
+                                    )
                                     logger.info(
                                         "STOP SELL %s qty=%.8f (filled=%.8f) @ %.8f | order_id=%s",
                                         plan.symbol,
@@ -493,10 +384,11 @@ def main() -> None:
                                     )
 
                     if skip_buy_this_tick:
-                        save_json(state_file, state)
+                        ledger.save()
                         continue
 
-                    managed_qty, avg_entry = read_managed_row(state, plan.symbol)
+                    ms = ledger.slice(plan.symbol, SOURCE_MOONSHOT)
+                    managed_qty, avg_entry = ms.tracked_qty, ms.avg_entry
                     position_value = managed_qty * last_price
                     untracked_base = max(0.0, exchange_total_base - managed_qty)
 
@@ -520,7 +412,11 @@ def main() -> None:
                         (((market.get("limits") or {}).get("cost") or {}).get("min") or 0.0)
                     )
                     effective_min_notional = max(min_order_notional, market_min_notional)
-                    if buy_notional < effective_min_notional:
+                    if moonshot_rebalance_skip_reason(
+                        needed_notional=needed_notional,
+                        spendable_quote=spendable_quote,
+                        effective_min_notional=effective_min_notional,
+                    ):
                         logger.info(
                             "BUY SKIP %s need=%.2f spendable=%.2f min=%.2f (market_min=%.2f)",
                             plan.symbol,
@@ -548,15 +444,23 @@ def main() -> None:
                         continue
 
                     if enabled_live_orders:
-                        cid = make_moonshot_client_order_id(plan.symbol, client_order_prefix)
+                        cid = make_client_order_id(plan.symbol, client_order_prefix)
                         order = exchange.create_market_buy_order(
                             plan.symbol, buy_qty, {"newClientOrderId": cid}
                         )
                         filled_qty, avg_price = extract_order_fill(order, buy_qty, last_price)
                         if filled_qty <= 0:
-                            logger.warning("BUY %s reported zero fill; state unchanged | order=%s", plan.symbol, order)
+                            logger.warning("BUY %s reported zero fill; ledger unchanged | order=%s", plan.symbol, order)
                         else:
-                            apply_buy_fill_state(state, plan.symbol, filled_qty, avg_price)
+                            fee_q = estimate_fee_quote(order, filled_qty, avg_price, quote_asset, fee_rate)
+                            ledger.apply_buy(
+                                plan.symbol,
+                                SOURCE_MOONSHOT,
+                                filled_qty,
+                                avg_price,
+                                fee_q,
+                                append_lot=True,
+                            )
                         logger.info(
                             "BUY %s qty=%.8f @ %.8f cost<=%.2f | order_id=%s client=%s",
                             plan.symbol,
@@ -578,7 +482,7 @@ def main() -> None:
                 except Exception as asset_exc:
                     logger.exception("Asset cycle failed for %s: %s", plan.symbol, asset_exc)
 
-            save_json(state_file, state)
+            ledger.save()
             logger.info("Moonshot cycle complete | free_%s=%.4f", quote_asset, quote_free)
 
         except KeyboardInterrupt:

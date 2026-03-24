@@ -32,8 +32,20 @@ risk:
 state:
   file: state.json
 
+# Single portfolio ledger: exchange vs bot-tracked slices (trend / moonshot).
+ledger:
+  file: unified_ledger.json
+  reconcile_on_startup: true
+  reconcile_lookback_days: 90
+  reconcile_max_fetch_iterations: 40
+  # If true, tagged trade replay overwrites saved slices whenever history has a position.
+  strict_reconcile_tagged_only: false
+  trend_client_order_prefix: trbot
+
 logging:
   file: bot.log
+  # Optional JSONL stream (set path to enable), e.g. bot.events.jsonl
+  structured_events_file: null
 
 alerts:
   telegram_enabled: false
@@ -58,9 +70,12 @@ execution:
   mode: live   # paper | live
   require_explicit_live_flag: true
   live_min_notional_check: true
+  # 0 = no daily cap
   max_live_trades_per_day: 0
   allow_multiple_positions: false
   stablecoin_cash_buffer_usdt: 0
+  # Used when market symbols are */USDC (USDT buffer alone is not required).
+  stablecoin_cash_buffer_usdc: 0
   max_consecutive_api_errors: 5
   # Temporary plumbing test helper: none | buy | sell
   manual_signal_override: none

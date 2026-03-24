@@ -17,7 +17,7 @@ from bot.exchange import build_exchange
 from bot.market_data import fetch_ohlcv_df
 from bot.indicators import add_indicators
 from bot.strategy import generate_signal
-from bot.risk import check_trade_allowed
+from bot.entry_gates import evaluate_moonshot_gate_for_trend_entry, evaluate_trend_buy_gates
 from bot.portfolio import Portfolio
 from bot.parameter_manager import apply_approved_parameters
 
@@ -39,22 +39,6 @@ def _as_utc_timestamp(ts) -> pd.Timestamp:
     if t.tzinfo is None:
         return t.tz_localize("UTC")
     return t.tz_convert("UTC")
-
-
-def event_controls_for_symbol(symbol: str, ts: pd.Timestamp, risk_cfg: dict) -> tuple[float, bool]:
-    events_root = risk_cfg.get("risk_events", {})
-    mult = float(events_root.get("default_size_multiplier", 1.0))
-    blocked = False
-    for ev in events_root.get("symbols", {}).get(symbol, []):
-        try:
-            start = pd.Timestamp(ev["start"], tz="UTC")
-            end = pd.Timestamp(ev["end"], tz="UTC")
-        except Exception:
-            continue
-        if start <= ts <= end:
-            mult = min(mult, float(ev.get("size_multiplier", 1.0)))
-            blocked = blocked or bool(ev.get("block_new_entries", False))
-    return max(mult, 0.0), blocked
 
 
 def max_drawdown(equity_curve: list[float]) -> float:
@@ -239,7 +223,11 @@ def main() -> None:
     risk_cfg = load_yaml_if_exists("config/risk_events.yaml")
 
     exchange = build_exchange(config)
+    exchange.load_markets()
     symbols = config["market"]["symbols"]
+    exec_cfg = config.get("execution") or {}
+    max_trades_per_day = int(exec_cfg.get("max_live_trades_per_day", 0))
+    allow_multiple_positions = bool(exec_cfg.get("allow_multiple_positions", False))
     timeframe = config["market"]["timeframe"]
     limit = config["market"].get("limit", 1000)
 
@@ -260,8 +248,10 @@ def main() -> None:
     equity_timestamps: list[pd.Timestamp] = []
 
     last_known_prices: dict[str, float] = {}
+    trade_counts_by_day: dict = {}
 
     for current_time in timeline:
+        day_key = pd.Timestamp(current_time).date()
         for symbol, df in data_by_symbol.items():
             matching = df[df["timestamp"] == current_time]
             if matching.empty:
@@ -324,38 +314,67 @@ def main() -> None:
                 signal = generate_signal(hist, config, in_position=False)
 
                 if signal.action == "buy" and signal.price and signal.stop_loss and signal.take_profit:
+                    trades_today = int(trade_counts_by_day.get(day_key, 0))
                     entry_price = float(signal.price) * (1 + slippage_rate)
-                    event_mult, event_block = event_controls_for_symbol(symbol, _as_utc_timestamp(current_time), risk_cfg)
-                    if event_block:
+                    mkt = exchange.markets.get(symbol) or {}
+                    mco = float((((mkt.get("limits") or {}).get("cost") or {}).get("min") or 0.0) or 0.0)
+                    market_min_cost = mco if mco > 0 else None
+
+                    pre_gate = evaluate_trend_buy_gates(
+                        symbol=symbol,
+                        signal_price=entry_price,
+                        signal_stop_loss=float(signal.stop_loss),
+                        signal_take_profit=float(signal.take_profit),
+                        bar_timestamp=_as_utc_timestamp(current_time),
+                        risk_cfg=risk_cfg,
+                        config=config,
+                        available_cash=portfolio.available_cash(),
+                        open_positions_count=portfolio.open_positions_count(),
+                        already_in_symbol=portfolio.has_position(symbol),
+                        daily_pnl=portfolio.daily_pnl,
+                        fee_rate=fee_rate,
+                        starting_balance=starting_balance,
+                        trades_today=trades_today,
+                        max_trades_per_day=max_trades_per_day,
+                        allow_multiple_positions=allow_multiple_positions,
+                        live_min_notional_check=bool(exec_cfg.get("live_min_notional_check", True)),
+                        market_min_cost=market_min_cost,
+                        spendable_cash_after_buffer=None,
+                        manual_buy_mode=False,
+                        manual_buy_notional=0.0,
+                    )
+                    if not pre_gate.allowed:
                         continue
 
-                    decision = check_trade_allowed(
-                        available_cash=portfolio.available_cash(),
-                        entry_price=entry_price,
-                        stop_price=float(signal.stop_loss),
+                    notional_pre = pre_gate.qty * entry_price
+                    current_equity = portfolio.mark_to_market(last_known_prices)
+                    moon_gate = evaluate_moonshot_gate_for_trend_entry(
+                        symbol=symbol,
+                        entry_notional=notional_pre,
+                        current_equity=current_equity,
+                        open_positions_count=portfolio.open_positions_count(),
                         config=config,
-                        total_open_positions=portfolio.open_positions_count(),
-                        already_in_symbol=portfolio.has_position(symbol),
-                        daily_pnl_fraction=portfolio.daily_pnl / max(starting_balance, 1),
-                        fee_rate=fee_rate,
+                        gate_result=pre_gate,
                     )
+                    if not moon_gate.allowed:
+                        continue
 
-                    if decision.allowed:
-                        try:
-                            qty = decision.qty * event_mult
-                            if qty <= 0 or (qty * entry_price) < config["risk"]["min_order_notional"]:
-                                continue
-                            portfolio.open_position(
-                                symbol=symbol,
-                                qty=qty,
-                                entry_price=entry_price,
-                                stop_loss=float(signal.stop_loss),
-                                take_profit=float(signal.take_profit),
-                                fee_rate=fee_rate,
-                                entry_time=str(current_time),
-                            )
-                        except ValueError:
-                            pass
+                    try:
+                        qty = moon_gate.qty
+                        if qty <= 0:
+                            continue
+                        portfolio.open_position(
+                            symbol=symbol,
+                            qty=qty,
+                            entry_price=entry_price,
+                            stop_loss=float(signal.stop_loss),
+                            take_profit=float(signal.take_profit),
+                            fee_rate=fee_rate,
+                            entry_time=str(current_time),
+                        )
+                        trade_counts_by_day[day_key] = trades_today + 1
+                    except ValueError:
+                        pass
 
         equity_curve.append(portfolio.mark_to_market(last_known_prices))
         equity_timestamps.append(current_time)
