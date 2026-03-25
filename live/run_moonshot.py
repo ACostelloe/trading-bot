@@ -39,6 +39,7 @@ from bot.unified_ledger import (
     estimate_fee_quote,
     full_reconcile_snapshot,
     make_client_order_id,
+    symbols_existing_on_exchange,
 )
 
 
@@ -205,6 +206,9 @@ def main() -> None:
     ledger.path = ledger_path
     trend_symbols = list(settings.get("market", {}).get("symbols", []))
     moonshot_syms = [p.symbol for p in plans if p.enabled and not p.manual_only]
+    moonshot_syms, moon_missing = symbols_existing_on_exchange(exchange, moonshot_syms)
+    if moon_missing:
+        logger.warning("[MOONSHOT_RUN] symbols not on exchange (skipped): %s", moon_missing)
     _auto_on = bool((moonshot_root.get("scanner_automation") or {}).get("enabled", False))
     logger.info(
         "[MOONSHOT_RUN] tradable_plans=%s scanner_automation=%s poll_seconds=%d",

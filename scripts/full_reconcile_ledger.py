@@ -82,7 +82,7 @@ def main() -> int:
     from bot.exchange import build_exchange
     from bot.moonshot_plans import parse_asset_plans
     from bot.parameter_manager import apply_approved_parameters
-    from bot.unified_ledger import UnifiedLedger, full_reconcile_snapshot
+    from bot.unified_ledger import UnifiedLedger, full_reconcile_snapshot, symbols_existing_on_exchange
 
     logging.basicConfig(
         level=logging.INFO,
@@ -115,6 +115,9 @@ def main() -> int:
     trend_symbols = list(settings.get("market", {}).get("symbols", []))
     plans = parse_asset_plans(moon_root)
     moonshot_syms = [p.symbol for p in plans if p.enabled and not p.manual_only]
+    moonshot_syms, moon_missing = symbols_existing_on_exchange(exchange, moonshot_syms)
+    if moon_missing:
+        logger.warning("Symbols not on exchange (omitted): %s", moon_missing)
 
     trend_prefix = str(ledger_cfg.get("trend_client_order_prefix", "trbot"))
     moonshot_prefix = str(moon_root.get("client_order_id_prefix", "msbot"))

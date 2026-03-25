@@ -46,6 +46,7 @@ from bot.unified_ledger import (
     full_reconcile_snapshot,
     log_symbol_truth,
     make_client_order_id,
+    symbols_existing_on_exchange,
 )
 
 
@@ -187,6 +188,9 @@ def main() -> None:
         for a in mroot.get("assets", [])
         if bool(a.get("enabled", True)) and not bool(a.get("manual_only", False))
     ]
+    moonshot_syms, moon_missing = symbols_existing_on_exchange(exchange, moonshot_syms)
+    if moon_missing:
+        logger.warning("Moonshot symbols not listed on exchange (omitted from reconcile): %s", moon_missing)
     moonshot_state_path = str(mroot.get("state_file", "moonshot_state.json"))
     if not os.path.isabs(moonshot_state_path):
         moonshot_state_path = os.path.abspath(moonshot_state_path)

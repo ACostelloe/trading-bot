@@ -271,6 +271,14 @@ def estimate_fee_quote(
     return fb * px * max(0.0, float(fallback_rate))
 
 
+def symbols_existing_on_exchange(exchange: Any, symbols: list[str]) -> tuple[list[str], list[str]]:
+    """Split symbols into those present in ``exchange.markets`` vs missing (wrong pair, delisted)."""
+    markets = getattr(exchange, "markets", None) or {}
+    ok = [s for s in symbols if s in markets]
+    missing = [s for s in symbols if s not in markets]
+    return ok, missing
+
+
 def fetch_my_trades_window(
     exchange,
     symbol: str,
