@@ -274,8 +274,23 @@ def estimate_fee_quote(
 def symbols_existing_on_exchange(exchange: Any, symbols: list[str]) -> tuple[list[str], list[str]]:
     """Split symbols into those present in ``exchange.markets`` vs missing (wrong pair, delisted)."""
     markets = getattr(exchange, "markets", None) or {}
-    ok = [s for s in symbols if s in markets]
-    missing = [s for s in symbols if s not in markets]
+    ok: list[str] = []
+    missing: list[str] = []
+    ensure = getattr(exchange, "_ensure_market", None)
+    for s in symbols:
+        if s in markets:
+            ok.append(s)
+            continue
+        # Some adapters (e.g. Swyftx) create markets lazily; try to materialize it.
+        if callable(ensure):
+            try:
+                ensure(s)
+                ok.append(s)
+                markets = getattr(exchange, "markets", None) or markets
+                continue
+            except Exception:
+                pass
+        missing.append(s)
     return ok, missing
 
 
