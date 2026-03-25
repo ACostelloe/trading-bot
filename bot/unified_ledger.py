@@ -277,10 +277,21 @@ def fetch_my_trades_window(
     since_ms: int,
     max_iterations: int,
 ) -> list[dict]:
+    """Fetch user trades in [since_ms, now]. Returns [] if symbol is invalid or API rejects."""
+    try:
+        markets = getattr(exchange, "markets", None) or {}
+        if symbol not in markets:
+            return []
+    except Exception:
+        return []
     out: list[dict] = []
     cursor = since_ms
     for _ in range(max(1, max_iterations)):
-        batch = exchange.fetch_my_trades(symbol, since=cursor, limit=500)
+        try:
+            batch = exchange.fetch_my_trades(symbol, since=cursor, limit=500)
+        except Exception:
+            # BadSymbol, delisted spot, wrong region, etc. — do not crash reconcile.
+            return out
         if not batch:
             break
         out.extend(batch)
