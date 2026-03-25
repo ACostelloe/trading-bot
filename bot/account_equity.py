@@ -36,38 +36,41 @@ def _merge_balance_totals(exchange: Any, log: logging.Logger) -> dict[str, float
     return merged
 
 
-def estimate_total_account_equity_usdt(exchange: Any, logger: logging.Logger | None = None) -> float:
+def estimate_total_account_equity(
+    exchange: Any, *, quote_asset: str = "USDT", logger: logging.Logger | None = None
+) -> float:
     """
-    Sum positive balances (spot + Binance funding/savings when applicable), valued in USDT.
+    Sum positive balances (spot + Binance funding/savings when applicable), valued in quote_asset.
 
-    Closer to Binance UI “Estimated Balance” than spot-only; futures/margin wallets are
+    Closer to exchange UI “Estimated Balance” than spot-only; futures/margin wallets are
     not included. Small drift vs the app is normal.
     """
     log = logger or _log
     total = _merge_balance_totals(exchange, log)
-    usdt_equiv = 0.0
+    q = str(quote_asset).upper().strip() or "USDT"
+    quote_equiv = 0.0
     for asset, qty in total.items():
         q = float(qty or 0.0)
         if q <= 1e-12:
             continue
         a = str(asset).upper()
-        if a == "USDT":
-            usdt_equiv += q
+        if a == str(quote_asset).upper():
+            quote_equiv += q
             continue
-        if a in _STABLES_1_TO_1_USDT:
-            pair = f"{a}/USDT"
+        if a in _STABLES_1_TO_1_USDT and str(quote_asset).upper() == "USDT":
+            pair = f"{a}/{quote_asset.upper()}"
             if pair in exchange.markets:
                 try:
                     t = exchange.fetch_ticker(pair)
                     px = float(t.get("last") or t.get("close") or 0.0)
-                    usdt_equiv += q * px if px > 0 else q
+                    quote_equiv += q * px if px > 0 else q
                 except Exception as exc:
                     log.warning("[equity] stable %s mark failed (%s); using 1:1", a, exc)
-                    usdt_equiv += q
+                    quote_equiv += q
             else:
-                usdt_equiv += q
+                quote_equiv += q
             continue
-        pair = f"{a}/USDT"
+        pair = f"{a}/{str(quote_asset).upper()}"
         if pair not in exchange.markets:
             log.warning("[equity] skip %s: no market %s", a, pair)
             continue
@@ -75,7 +78,12 @@ def estimate_total_account_equity_usdt(exchange: Any, logger: logging.Logger | N
             t = exchange.fetch_ticker(pair)
             px = float(t.get("last") or t.get("close") or 0.0)
             if px > 0:
-                usdt_equiv += q * px
+                quote_equiv += q * px
         except Exception as exc:
             log.warning("[equity] skip %s: %s", a, exc)
-    return float(usdt_equiv)
+    return float(quote_equiv)
+
+
+def estimate_total_account_equity_usdt(exchange: Any, logger: logging.Logger | None = None) -> float:
+    # Backwards-compatible wrapper for existing code paths.
+    return estimate_total_account_equity(exchange, quote_asset="USDT", logger=logger)

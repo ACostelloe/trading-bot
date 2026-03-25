@@ -121,8 +121,17 @@ class SwyftxClient:
             "limit": int(limit),
         }
         rows = self._request("GET", path, authed=False, params=params)
+        # Docs show a list of bars, but the live API returns {"candles": [...]}.
+        if isinstance(rows, dict):
+            err = rows.get("error")
+            if isinstance(err, dict):
+                raise RuntimeError(f"Swyftx bars error: {err.get('error')} {err.get('message')}".strip())
+            candles = rows.get("candles")
+            if isinstance(candles, list):
+                return candles
         if not isinstance(rows, list):
-            raise RuntimeError(f"Unexpected bars payload: {type(rows)}")
+            # Could also be an upstream HTML (cloudflare) response wrapped by requests.json()
+            raise RuntimeError(f"Unexpected bars payload: {type(rows)} keys={list(rows)[:10] if isinstance(rows, dict) else ''}")
         return rows
 
     def execute_swap(

@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from bot.entry_gates import moonshot_rebalance_skip_reason
 from bot.exchange import build_exchange
 from bot.logger import get_logger
-from bot.account_equity import estimate_total_account_equity_usdt
+from bot.account_equity import estimate_total_account_equity, estimate_total_account_equity_usdt
 from bot.binance_conversion import (
     ensure_binance_spot_before_stable_sell,
     merge_binance_funding_into_free,
@@ -314,7 +314,7 @@ def main() -> None:
                         logger=logger,
                     )
                 else:
-                    equity_quote = estimate_total_account_equity_usdt(exchange, logger)
+                    equity_quote = estimate_total_account_equity(exchange, quote_asset=quote_asset, logger=logger)
                     logger.info(
                         "[MOONSHOT_RUN] equity_binance_est_usdt=%.2f (risk.starting_balance_usdt=%s)",
                         equity_quote,
