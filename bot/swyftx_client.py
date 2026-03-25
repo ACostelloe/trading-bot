@@ -149,12 +149,19 @@ class SwyftxClient:
         """
         if not self._asset_by_code:
             self.get_market_assets()
+        buy_id = self.asset_id_for_code(buy_code)
+        sell_id = self.asset_id_for_code(sell_code)
+        if buy_id is None:
+            raise RuntimeError(f"Unknown buy asset code: {buy_code}")
+        if sell_id is None:
+            raise RuntimeError(f"Unknown sell asset code: {sell_code}")
         limit_asset_id = self.asset_id_for_code(limit_asset_code)
         if limit_asset_id is None:
             raise RuntimeError(f"Unknown asset code for limitAsset: {limit_asset_code}")
         body: dict[str, Any] = {
-            "buy": str(buy_code).upper(),
-            "sell": str(sell_code).upper(),
+            # Swyftx /swap expects asset ids (as strings), not ticker codes.
+            "buy": str(int(buy_id)),
+            "sell": str(int(sell_id)),
             "limitAsset": int(limit_asset_id),
             "limitQty": str(limit_qty),
         }
