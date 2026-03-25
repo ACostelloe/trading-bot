@@ -3,7 +3,7 @@
 moonshot:
   enabled_live_orders: true
   poll_seconds: 60
-  quote_asset: USDT
+  quote_asset: AUD
   # Bot-owned lots: orders use newClientOrderId prefix; startup rebuilds managed_qty/avg from tagged trades only.
   client_order_id_prefix: msbot
   reconcile_on_startup: true
@@ -11,14 +11,10 @@ moonshot:
   reconcile_max_fetch_iterations: 40
   # If true, startup always overwrites state from tagged trades (ignore file when tags exist).
   reconcile_strict_tagged_only: false
-  # Sells USDC/FDUSD/… for USDT on spot; Binance funding-wallet balances are included and moved to spot before the sell.
-  auto_convert_to_quote: true
-  conversion_source_assets:
-    - USDC
-    - FDUSD
-    - TUSD
-    - BUSD
-  min_conversion_notional: 5
+  # Swyftx runs in AUD; disable Binance-specific conversion.
+  auto_convert_to_quote: false
+  conversion_source_assets: []
+  min_conversion_notional: 0
   stablecoin_buffer_quote: 0
   min_order_notional: 5
   rebalance_tolerance_pct: 5
@@ -33,7 +29,8 @@ moonshot:
 
   # Periodic scan → merge into this YAML → rebalance loop uses updated symbols.
   scanner_automation:
-    enabled: true
+    # Binance/CoinGecko/DexScreener scanner is Binance-focused; disable for Swyftx.
+    enabled: false
     interval_seconds: 1800
     engine: multi_source
     write_portfolio_yaml: true
@@ -53,32 +50,26 @@ moonshot:
   assets:
     # Core: BTC + USDC sleeve + alts. Enabled rows total ~$220 of ~$347 account baseline.
     - name: Bitcoin
-      symbol: BTC/USDT
+      symbol: BTC/AUD
       target_usdc: 60
       enabled: true
       manual_only: false
 
-    - name: USDC
-      symbol: USDC/USDT
-      target_usdc: 15
-      enabled: true
-      manual_only: false
-
     - name: Render
-      symbol: RENDER/USDT
+      symbol: RENDER/AUD
       target_usdc: 25
       enabled: true
       manual_only: false
 
     - name: AIOZ Network
-      symbol: AIOZ/USDT
+      symbol: AIOZ/AUD
       target_usdc: 15
       # Binance spot may not list AIOZ/USDT (ccxt BadSymbol) — enable only if load_markets() has it.
       enabled: false
       manual_only: false
 
     - name: Phala Network
-      symbol: PHA/USDT
+      symbol: PHA/AUD
       target_usdc: 24
       enabled: true
       manual_only: false
@@ -90,13 +81,13 @@ moonshot:
       manual_only: false
 
     - name: Celer Network
-      symbol: CELR/USDT
+      symbol: CELR/AUD
       target_usdc: 24
       enabled: true
       manual_only: false
 
     - name: Highstreet
-      symbol: HIGH/USDT
+      symbol: HIGH/AUD
       target_usdc: 24
       enabled: true
       manual_only: false
@@ -114,68 +105,68 @@ moonshot:
       manual_only: false
 
     - name: NFPrompt
-      symbol: NFP/USDT
+      symbol: NFP/AUD
       target_usdc: 24
       enabled: true
       manual_only: false
 
     - name: Synapse
-      symbol: SYN/USDT
+      symbol: SYN/AUD
       target_usdc: 24
       enabled: true
       manual_only: false
 
     # --- Narrative sleeve (scanner category_bonus: AI / Solana / depin / RWA) ---
     - name: Fetch.ai
-      symbol: FET/USDT
+      symbol: FET/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Bittensor
-      symbol: TAO/USDT
+      symbol: TAO/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Jupiter
-      symbol: JUP/USDT
+      symbol: JUP/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Bonk
-      symbol: BONK/USDT
+      symbol: BONK/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Drift
-      symbol: DRIFT/USDT
+      symbol: DRIFT/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Akash Network
-      symbol: AKT/USDT
+      symbol: AKT/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Helium
-      symbol: HNT/USDT
+      symbol: HNT/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Ondo Finance
-      symbol: ONDO/USDT
+      symbol: ONDO/AUD
       target_usdc: 10
       enabled: true
       manual_only: false
 
     - name: Maple Finance
-      symbol: MPL/USDT
+      symbol: MPL/AUD
       target_usdc: 10
       enabled: true
       manual_only: false

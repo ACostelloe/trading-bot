@@ -1,11 +1,12 @@
 exchange:
-  name: binance
+  name: swyftx
+  # Swyftx demo uses api.demo.swyftx.com.au
   sandbox: false
 
 market:
   # Trend bot: separate from moonshot. BTC is targeted in moonshot_portfolio.yaml only (avoids double BTC exposure).
   symbols:
-    - ETH/USDT
+    - ETH/AUD
   timeframe: 15m
   limit: 300
   poll_seconds: 30
@@ -20,7 +21,7 @@ strategy:
   take_profit_rr: 2.0
 
 risk:
-  # Baseline for drawdown / daily-loss / checklist math. Match Binance “Estimated Balance” (~$347).
+  # Baseline for drawdown / daily-loss / checklist math in quote currency (AUD).
   starting_balance_usdt: 347
   # moonshot checklist equity: binance_total = full spot book (recommended); moonshot_symbols_only = narrower
   equity_valuation: binance_total
