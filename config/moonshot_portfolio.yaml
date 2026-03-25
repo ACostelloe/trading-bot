@@ -73,7 +73,8 @@ moonshot:
     - name: AIOZ Network
       symbol: AIOZ/USDT
       target_usdc: 15
-      enabled: true
+      # Binance spot may not list AIOZ/USDT (ccxt BadSymbol) — enable only if load_markets() has it.
+      enabled: false
       manual_only: false
 
     - name: Phala Network

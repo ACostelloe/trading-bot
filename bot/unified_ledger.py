@@ -387,7 +387,14 @@ def full_reconcile_snapshot(
     for sym in universe:
         book = ledger.ensure_symbol(sym)
         base, quote = book.base, book.quote
-        all_trades = fetch_my_trades_window(exchange, sym, since_ms, max_fetch_iterations)
+        all_trades: list[dict] = []
+        if sym not in exchange.markets:
+            logger.warning("LEDGER reconcile: skip trade history (unknown market): %s", sym)
+        else:
+            try:
+                all_trades = fetch_my_trades_window(exchange, sym, since_ms, max_fetch_iterations)
+            except Exception as exc:
+                logger.warning("LEDGER reconcile: fetch_my_trades failed %s: %s", sym, exc)
 
         for src, prefix in ((SOURCE_MOONSHOT, moonshot_prefix), (SOURCE_TREND, trend_prefix)):
             if src == SOURCE_MOONSHOT and sym not in moonshot_symbols:
