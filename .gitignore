@@ -19,6 +19,7 @@ state.json
 moonshot_state.json
 unified_ledger.json
 research/multi_source_scan_state.json
+research/moonshot_scan_state.json
 config/*.bak
 
 # Backtest outputs

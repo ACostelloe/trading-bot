@@ -33,6 +33,8 @@ class SwyftxClient:
 
         self._asset_by_code: dict[str, dict[str, Any]] = {}
         self._asset_by_id: dict[int, dict[str, Any]] = {}
+        # Basic throttle to avoid Swyftx /orders/ rate limits when the bot places many orders quickly.
+        self._last_orders_post_at: float = 0.0
 
     def _headers(self, *, authed: bool) -> dict[str, str]:
         h = {
@@ -168,4 +170,48 @@ class SwyftxClient:
         if intermediate_asset_id is not None:
             body["intermediateAssetId"] = int(intermediate_asset_id)
         return self._request("POST", "/swap/", authed=True, json=body)
+
+    def place_order(
+        self,
+        *,
+        primary_code: str,
+        secondary_code: str,
+        quantity: str,
+        asset_quantity_code: str,
+        order_type: str = "MARKET_BUY",
+        trigger: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Place order via /orders/.
+
+        Docs example uses:
+          {"primary":"USD","secondary":"BTC","quantity":"1000","assetQuantity":"USD","orderType":"MARKET_BUY","trigger":"52000"}
+        """
+        # Keep a small gap between order placements to reduce chance of HTTP 429.
+        # (Swyftx rate limit messages indicate "too quickly" rather than a hard per-hour cap.)
+        now = time.time()
+        min_gap_s = 1.2
+        elapsed = now - self._last_orders_post_at
+        if elapsed < min_gap_s:
+            time.sleep(min_gap_s - elapsed)
+        self._last_orders_post_at = time.time()
+
+        body: dict[str, Any] = {
+            "primary": str(primary_code).upper(),
+            "secondary": str(secondary_code).upper(),
+            "quantity": str(quantity),
+            "assetQuantity": str(asset_quantity_code).upper(),
+            "orderType": str(order_type),
+        }
+        if trigger is not None:
+            body["trigger"] = str(trigger)
+
+        try:
+            return self._request("POST", "/orders/", authed=True, json=body)
+        except RuntimeError as e:
+            # Retry once on rate limit with a full minute pause.
+            if "HTTP 429" in str(e) and "/orders/" in str(e):
+                time.sleep(60)
+                return self._request("POST", "/orders/", authed=True, json=body)
+            raise
 

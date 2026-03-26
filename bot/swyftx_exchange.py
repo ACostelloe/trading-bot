@@ -25,8 +25,7 @@ class SwyftxExchange:
     Notes:
     - Swyftx uses JWT auth via /auth/refresh/ (apiKey -> accessToken).
     - Market/order APIs are not CCXT, so we map to compatible shapes.
-    - We implement market orders via /swap/ (market-style), because the /orders/
-      docs only describe limit/stop semantics.
+    - We submit through /orders/ using orderType=1 for market-style execution.
     """
 
     id = "swyftx"
@@ -154,11 +153,11 @@ class SwyftxExchange:
             total[code] = amt
         return {"free": free, "total": total}
 
-    # ---- Orders (market via swap) ----
+    # ---- Orders (market via /orders/) ----
     def create_market_buy_order(self, symbol: str, amount_base: float, params: dict | None = None) -> dict[str, Any]:
         """
         Buy BASE using QUOTE.
-        We implement this via /swap/ by limiting the QUOTE spent.
+        We submit orderType=1 via /orders/ with quantity in QUOTE.
         """
         m = self._ensure_market(symbol)
         base = m["base"]
@@ -168,20 +167,37 @@ class SwyftxExchange:
         px = float(t.get("last") or 0.0)
         if px <= 0:
             raise RuntimeError(f"Cannot price {symbol} for market buy")
-        limit_quote = float(amount_base) * px
-        limit_qty = self.amount_to_precision(symbol, limit_quote)
-        resp = self.client.execute_swap(buy_code=base, sell_code=quote, limit_asset_code=quote, limit_qty=limit_qty)
+        quote_qty = self.amount_to_precision(symbol, float(amount_base) * px)
+        resp = self.client.place_order(
+            primary_code=quote,
+            secondary_code=base,
+            quantity=quote_qty,
+            asset_quantity_code=quote,
+            order_type="MARKET_BUY",
+            trigger=None,
+        )
         return {"info": resp, "symbol": symbol, "side": "buy", "type": "market", "id": _extract_order_uuid(resp)}
 
     def create_market_sell_order(self, symbol: str, amount_base: float, params: dict | None = None) -> dict[str, Any]:
         """
-        Sell BASE for QUOTE via /swap/ by limiting BASE sold.
+        Sell BASE for QUOTE via /orders/ with quantity in BASE.
         """
         m = self._ensure_market(symbol)
         base = m["base"]
         quote = m["quote"]
-        limit_qty = self.amount_to_precision(symbol, float(amount_base))
-        resp = self.client.execute_swap(buy_code=quote, sell_code=base, limit_asset_code=base, limit_qty=limit_qty)
+        t = self.fetch_ticker(symbol)
+        px = float(t.get("last") or 0.0)
+        if px <= 0:
+            raise RuntimeError(f"Cannot price {symbol} for market sell")
+        base_qty = self.amount_to_precision(symbol, float(amount_base))
+        resp = self.client.place_order(
+            primary_code=quote,
+            secondary_code=base,
+            quantity=base_qty,
+            asset_quantity_code=base,
+            order_type="MARKET_SELL",
+            trigger=None,
+        )
         return {"info": resp, "symbol": symbol, "side": "sell", "type": "market", "id": _extract_order_uuid(resp)}
 
     # ---- Optional methods used by reconcile ----
@@ -196,12 +212,15 @@ class SwyftxExchange:
 
 def _extract_order_uuid(resp: dict | None) -> str | None:
     r = resp or {}
-    # /swap/ returns buyResult.order.orderUuid and sellResult.order.orderUuid (strings)
+    # /orders/ may return orderUuid at top-level; keep swap-path fallback for compatibility.
+    ou = r.get("orderUuid")
+    if isinstance(ou, str) and ou.strip():
+        return ou.strip()
     for k in ("buyResult", "sellResult"):
         row = r.get(k) or {}
         o = row.get("order") or {}
-        ou = o.get("orderUuid")
-        if isinstance(ou, str) and ou.strip():
-            return ou.strip()
+        nested = o.get("orderUuid")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
     return None
 

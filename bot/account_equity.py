@@ -13,6 +13,37 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 _STABLES_1_TO_1_USDT = frozenset({"USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDE"})
+# USD-pegged; when quote is AUD and no USDT/AUD market exists, cross via BTC (see below).
+_STABLES_USD_PEG = frozenset({"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDE"})
+
+
+def _quote_equiv_via_btc_cross(
+    exchange: Any, *, asset: str, qty: float, quote_asset: str, log: logging.Logger
+) -> float | None:
+    """
+    Value USD-pegged stables in quote when direct */quote is missing (e.g. no USDT/AUD on Swyftx).
+    Uses: qty * (BTC/quote) / (BTC/USDT) — all USD stables use the USDT/BTC leg for the USD peg.
+    """
+    a = asset.upper()
+    q = quote_asset.upper()
+    if qty <= 0 or a == q or a not in _STABLES_USD_PEG:
+        return None
+    if q == "USDT":
+        return None
+    btc_q = f"BTC/{q}"
+    btc_usdt = "BTC/USDT"
+    try:
+        tq = exchange.fetch_ticker(btc_q)
+        tu = exchange.fetch_ticker(btc_usdt)
+        pq = float(tq.get("last") or tq.get("close") or 0.0)
+        pu = float(tu.get("last") or tu.get("close") or 0.0)
+        if pq <= 0 or pu <= 0:
+            return None
+        # quote per USD-stable ≈ (quote per BTC) / (USDT per BTC)
+        return float(qty * (pq / pu))
+    except Exception as exc:
+        log.debug("[equity] btc cross %s->%s failed: %s", a, q, exc)
+        return None
 
 
 def _merge_balance_totals(exchange: Any, log: logging.Logger) -> dict[str, float]:
@@ -72,6 +103,13 @@ def estimate_total_account_equity(
             continue
         pair = f"{a}/{str(quote_asset).upper()}"
         if pair not in exchange.markets:
+            if a in _STABLES_USD_PEG and str(quote_asset).upper() != "USDT":
+                crossed = _quote_equiv_via_btc_cross(
+                    exchange, asset=a, qty=q, quote_asset=str(quote_asset), log=log
+                )
+                if crossed is not None:
+                    quote_equiv += crossed
+                    continue
             log.warning("[equity] skip %s: no market %s", a, pair)
             continue
         try:
